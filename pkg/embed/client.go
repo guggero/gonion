@@ -110,7 +110,31 @@ type Options struct {
 	// ExpectedRelayIdentity). Setting a raw TLS InsecureSkipVerify-style
 	// option is never a substitute.
 	Log io.Writer
+
+	// BootstrapAttempts is how many bootstrap connections New tries before
+	// giving up: after a network, handshake or directory failure it waits
+	// briefly and dials again, which with the default ORDialer means
+	// another randomly chosen fallback (dir-spec client operation: "On
+	// failure, the client waits briefly, then tries that network-status
+	// document again from another cache"). A fallback that already failed
+	// is skipped. It doesn't apply in bridge mode, where the one pinned
+	// bridge is dialed once and no other relay is ever substituted. Zero or
+	// less means a single attempt.
+	BootstrapAttempts int
 }
+
+// defaultBootstrapAttempts is the number of fallbacks DefaultOptions lets New
+// try.
+const defaultBootstrapAttempts = 3
+
+// bootstrapRetryDelay is the pause between two bootstrap attempts.
+var bootstrapRetryDelay = time.Second
+
+// permanentError marks a bootstrap failure that another attempt can't fix,
+// like a configuration error.
+type permanentError struct{ error }
+
+func (e permanentError) Unwrap() error { return e.error }
 
 // DefaultOptions returns the local pool defaults plus two direct TCP dialers:
 // a fallback directory connection for bootstrap and a connection to the selected
@@ -120,10 +144,11 @@ type Options struct {
 // never closes it.
 func DefaultOptions() Options {
 	return Options{
-		CircuitTTL:     circuitTTL,
-		MaxCircuitUses: maxCircuitUses,
-		ORDialer:       defaultORDialer,
-		GuardDialer:    defaultGuardDialer,
+		CircuitTTL:        circuitTTL,
+		MaxCircuitUses:    maxCircuitUses,
+		ORDialer:          defaultORDialer,
+		GuardDialer:       defaultGuardDialer,
+		BootstrapAttempts: defaultBootstrapAttempts,
 	}
 }
 
@@ -161,7 +186,7 @@ func (o Options) validate() error {
 
 // New bootstraps a fresh embedded client: it dials a guard/fallback, performs
 // the link handshake, bootstraps consensus+microdescriptors, and is ready to
-// dial immediately.
+// dial immediately. It tries up to Options.BootstrapAttempts connections.
 func New(ctx context.Context, opts Options) (*Client, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -177,30 +202,94 @@ func New(ctx context.Context, opts Options) (*Client, error) {
 		return nil, fmt.Errorf("embed: ORDialer is required for New")
 	}
 	obs := newObservability(opts.Log)
-	obs.logf("bootstrap: dialing")
-	orConn, err := dial(ctx)
-	if err != nil {
-		if orConn != nil {
-			_ = orConn.Close()
+	attempts := max(opts.BootstrapAttempts, 1)
+	if opts.Bridge != nil {
+		attempts = 1
+	}
+	failed := make(map[[20]byte]bool)
+	var errs []error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		if attempt > 1 {
+			if err := sleepCtx(ctx, bootstrapRetryDelay); err != nil {
+				return nil, err
+			}
 		}
-		obs.logf("bootstrap: dial failed: %v", err)
+		obs.logf("bootstrap: dialing (attempt %d of %d)", attempt, attempts)
+		c, identity, dialed, err := bootstrapOnce(ctx, dial, opts, failed)
+		if err == nil {
+			return c, nil
+		}
+		if !dialed {
+			obs.logf("bootstrap: dial failed: %v", err)
+		} else {
+			obs.logf("bootstrap: attempt %d failed: %v", attempt, err)
+		}
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		return nil, err
+		var permanent permanentError
+		if errors.As(err, &permanent) {
+			return nil, permanent.error
+		}
+		errs = append(errs, err)
+		if identity != [20]byte{} && opts.Bridge == nil {
+			failed[identity] = true
+		}
 	}
-	return NewWithConn(ctx, orConn, opts)
+	if len(errs) == 1 {
+		return nil, errs[0]
+	}
+	return nil, errors.Join(errs...)
+}
+
+// bootstrapOnce dials one bootstrap connection and bootstraps over it. It
+// returns the pinned identity of the relay it used, if known, so a failed
+// fallback isn't tried again, and whether the dial itself succeeded.
+func bootstrapOnce(ctx context.Context, dial func(context.Context) (net.Conn, error), opts Options, failed map[[20]byte]bool) (*Client, [20]byte, bool, error) {
+	// The default dialer picks fallbacks at random; redial (a few times)
+	// when it returns one that already failed.
+	for redials := 0; ; redials++ {
+		orConn, err := dial(ctx)
+		if err != nil {
+			if orConn != nil {
+				_ = orConn.Close()
+			}
+			return nil, [20]byte{}, false, err
+		}
+		var identity [20]byte
+		if pinned, ok := orConn.(interface{ ExpectedRelayIdentity() [20]byte }); ok {
+			identity = pinned.ExpectedRelayIdentity()
+		}
+		if identity != [20]byte{} && failed[identity] && redials < 3 {
+			_ = orConn.Close()
+			continue
+		}
+		c, err := NewWithConn(ctx, orConn, opts)
+		return c, identity, true, err
+	}
+}
+
+// sleepCtx waits for d or until ctx is done.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
 }
 
 // NewWithConn wraps an already-established OR connection (e.g. over a pluggable
 // transport) and bootstraps on top of it.
 func NewWithConn(ctx context.Context, orConn net.Conn, opts Options) (*Client, error) {
 	if orConn == nil {
-		return nil, fmt.Errorf("embed: nil OR connection")
+		return nil, permanentError{fmt.Errorf("embed: nil OR connection")}
 	}
 	if err := opts.validate(); err != nil {
 		_ = orConn.Close()
-		return nil, err
+		return nil, permanentError{err}
 	}
 	if err := ctx.Err(); err != nil {
 		_ = orConn.Close()
@@ -213,7 +302,7 @@ func NewWithConn(ctx context.Context, orConn net.Conn, opts Options) (*Client, e
 	if pinned, ok := orConn.(interface{ ExpectedRelayIdentity() [20]byte }); ok {
 		if identity != [20]byte{} && identity != pinned.ExpectedRelayIdentity() {
 			_ = orConn.Close()
-			return nil, fmt.Errorf("embed: conflicting bootstrap identity pins")
+			return nil, permanentError{fmt.Errorf("embed: conflicting bootstrap identity pins")}
 		}
 		identity = pinned.ExpectedRelayIdentity()
 	}
@@ -222,7 +311,7 @@ func NewWithConn(ctx context.Context, orConn net.Conn, opts Options) (*Client, e
 	// skip-check fields are removed (security-required migration, E4.1).
 	if identity == [20]byte{} {
 		_ = orConn.Close()
-		return nil, fmt.Errorf("embed: bootstrap relay identity is required")
+		return nil, permanentError{fmt.Errorf("embed: bootstrap relay identity is required")}
 	}
 
 	obs := newObservability(opts.Log)

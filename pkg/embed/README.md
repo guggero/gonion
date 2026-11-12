@@ -25,6 +25,12 @@ guard identity and its persistent state are the caller's responsibility through
   mandatory unless the returned connection implements
   `ExpectedRelayIdentity() [20]byte`, as the built-in fallback dialer does.
   Conflicting pins, zero pins and a CERTS identity mismatch fail closed.
+- `BootstrapAttempts` (3 in `DefaultOptions`) is how many bootstrap
+  connections `New` tries. After a network, handshake or directory failure it
+  waits a second and calls `ORDialer` again; the built-in dialer picks a random
+  fallback each time, and a fallback that already failed is skipped. Identity
+  and configuration errors are not retried, and bridge mode dials its pinned
+  bridge only once.
 - `GuardDialer(ctx, guard)` opens the selected first relay for every traffic
   circuit, including onion directory, introduction and rendezvous circuits. It
   must honor cancellation and must not substitute another relay.

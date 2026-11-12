@@ -287,16 +287,18 @@ func (c *Client) reapLoop(ctx context.Context) {
 	}
 }
 
-// gonionBuilder adapts *gonion.Conn to capi.CircuitBuilder. Each BuildPath dials
-// a fresh OR connection to the path's guard and builds the circuit there. This
-// matches tor-spec: the circuit's first hop is the guard we are actually
-// connected to, not whatever relay the bootstrap fallback happened to be.
+// gonionBuilder adapts *gonion.Conn to capi.CircuitBuilder. BuildPath builds
+// the circuit over an OR connection to the path's guard, shared with the
+// client's other circuits through that guard (see guardChannels). This matches
+// tor-spec: the circuit's first hop is the guard we are actually connected to,
+// not whatever relay the bootstrap fallback happened to be.
 type gonionBuilder struct {
-	dial   func(context.Context, *common.RouterStatus) (net.Conn, error)
-	ctx    context.Context
-	bridge *bridgeState
-	guards *path.GuardManager
-	obs    *observability
+	dial     func(context.Context, *common.RouterStatus) (net.Conn, error)
+	ctx      context.Context
+	bridge   *bridgeState
+	guards   *path.GuardManager
+	obs      *observability
+	channels *guardChannels // nil: a connection per circuit
 }
 
 func (b gonionBuilder) PublicGuardManager() *path.GuardManager { return b.guards }
@@ -335,7 +337,40 @@ func (b gonionBuilder) BuildPath(id uint32, relays []*common.RouterStatus) (capi
 		b.obs.logf("guard: rejected path not starting at the pinned bridge")
 		return nil, fmt.Errorf("embed: path does not start at configured bridge")
 	}
-	raw, err := b.dial(ctx, relays[0])
+	guard := relays[0]
+	shared, release, err := b.channels.acquire(ctx, guard.NodeID, func(ctx context.Context) (sharedConn, error) {
+		return b.connect(ctx, guard)
+	})
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, err
+	}
+	conn := shared.(*gonion.Conn)
+
+	// Canceling the build tears down this circuit only; the connection
+	// stays for the other circuits.
+	circ, err := conn.BuildPathContext(ctx, relays)
+	if err != nil {
+		release()
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, err
+	}
+	if ctx.Err() != nil {
+		_ = circ.Close()
+		release()
+		return nil, ctx.Err()
+	}
+	context.AfterFunc(circ.Ctx, release)
+	return &guardCirc{Circ: gonion.NewCircAdapter(circ)}, nil
+}
+
+// connect opens and authenticates an OR connection to guard.
+func (b gonionBuilder) connect(ctx context.Context, guard *common.RouterStatus) (*gonion.Conn, error) {
+	raw, err := b.dial(ctx, guard)
 	if err != nil {
 		if raw != nil {
 			_ = raw.Close()
@@ -366,28 +401,17 @@ func (b gonionBuilder) BuildPath(id uint32, relays []*common.RouterStatus) (capi
 		}
 		return nil, err
 	}
-	if err := conn.CheckRelayFingerprint(relays[0].NodeID); err != nil {
+	if err := conn.CheckRelayFingerprint(guard.NodeID); err != nil {
 		_ = conn.Close()
 		b.obs.countIdentityMismatch()
 		b.obs.logf("guard: relay identity does not match the selected guard")
 		return nil, err
 	}
-	stopBuild := context.AfterFunc(ctx, func() { _ = conn.Close() })
-	defer stopBuild()
-	circ, err := conn.BuildPath(id, relays)
-	if err != nil {
-		_ = conn.Close()
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		return nil, err
-	}
-	if !stopBuild() || !stop() || ctx.Err() != nil {
+	if !stop() || ctx.Err() != nil {
 		_ = conn.Close()
 		return nil, ctx.Err()
 	}
-	context.AfterFunc(circ.Ctx, func() { _ = conn.Close() })
-	return &guardCirc{Circ: gonion.NewCircAdapter(circ), conn: conn}, nil
+	return conn, nil
 }
 
 // contextBuilder binds the legacy capi builder to one dial operation.
@@ -474,11 +498,10 @@ func (c *Client) reapOnce() {
 	}
 }
 
-// guardCirc closes the underlying guard connection when the circuit is closed.
+// guardCirc is a circuit built over a (shared) guard connection; the
+// connection's reference is released when the circuit ends.
 type guardCirc struct {
 	capi.Circ
-	conn *gonion.Conn
-	once sync.Once
 }
 
 func (g *guardCirc) EstablishIntro(auth ed25519.PrivateKey) error {
@@ -493,6 +516,5 @@ func (g *guardCirc) AcceptStream(ctx context.Context) (net.Conn, error) {
 func (g *guardCirc) StopAccepting() error { return g.Circ.(capi.ServiceCirc).StopAccepting() }
 
 func (g *guardCirc) Close() error {
-	g.once.Do(func() { _ = g.conn.Close() })
 	return g.Circ.Close()
 }

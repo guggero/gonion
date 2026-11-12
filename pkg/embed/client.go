@@ -32,6 +32,10 @@ type Client struct {
 	storage storage.Storage
 	cns     *common.Consensus
 
+	// channels are the OR connections shared by the circuits through each
+	// guard (nil when the builder is a test double).
+	channels *guardChannels
+
 	// builder constructs circuits. Set by New/NewWithConn; overridable in
 	// tests with a stub.
 	builder capi.CircuitBuilder
@@ -356,7 +360,8 @@ func NewWithConn(ctx context.Context, orConn net.Conn, opts Options) (*Client, e
 			return nil, err
 		}
 	}
-	builder := gonionBuilder{dial: opts.GuardDialer, guards: opts.Guards, obs: obs}
+	channels := newGuardChannels()
+	builder := gonionBuilder{dial: opts.GuardDialer, guards: opts.Guards, obs: obs, channels: channels}
 	recoveryDial := opts.ORDialer
 	if opts.Bridge == nil && recoveryDial != nil {
 		// A built-in fallback connection carries the *selected endpoint's*
@@ -405,6 +410,7 @@ func NewWithConn(ctx context.Context, orConn net.Conn, opts Options) (*Client, e
 		hs:             &hs.Client{},
 		longLived:      opts.LongLived,
 		builder:        builder,
+		channels:       channels,
 		ttl:            opts.CircuitTTL,
 		maxUses:        opts.MaxCircuitUses,
 		obs:            obs,
@@ -472,6 +478,7 @@ func (c *Client) Close() error {
 	for _, pc := range circuits {
 		_ = pc.circ.Close()
 	}
+	c.channels.close()
 	if c.conn != nil {
 		return c.conn.Close()
 	}
@@ -518,6 +525,9 @@ type Stats struct {
 	GuardDialFailures    uint64
 	IdentityMismatches   uint64
 	ActiveCircuits       int
+	// GuardConnections is the number of OR connections the circuits share
+	// (one per guard in use, kept for a few minutes after its last circuit).
+	GuardConnections int
 
 	// Guard policy state. GuardMode is "pinned-bridge" or "public-guard";
 	// Bridge fields only apply in pinned-bridge mode.
@@ -554,6 +564,7 @@ func (c *Client) Stats() Stats {
 			s.ConsensusAge = age
 		}
 	}
+	s.GuardConnections = c.channels.count()
 	c.mu.RLock()
 	s.ActiveCircuits = len(c.circuits)
 	s.Listeners = len(c.listeners)

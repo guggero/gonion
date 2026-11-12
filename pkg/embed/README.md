@@ -32,9 +32,12 @@ guard identity and its persistent state are the caller's responsibility through
   fallback each time, and a fallback that already failed is skipped. Identity
   and configuration errors are not retried, and bridge mode dials its pinned
   bridge only once.
-- `GuardDialer(ctx, guard)` opens the selected first relay for every traffic
-  circuit, including onion directory, introduction and rendezvous circuits. It
-  must honor cancellation and must not substitute another relay.
+- `GuardDialer(ctx, guard)` opens the connection to the selected first relay
+  for traffic circuits, including onion directory, introduction and rendezvous
+  circuits. It must honor cancellation and must not substitute another relay.
+  Like C tor's channels, all circuits through one guard share one connection;
+  it is closed 3 to 4.5 minutes after its last circuit, and
+  `Stats.GuardConnections` counts the open ones.
 - The default `GuardDialer` dials direct TCP to the relay path selection chose.
   A caller that needs a different policy replaces or clears it; a cleared
   dialer fails closed, because construction returns an error instead of opening

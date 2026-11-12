@@ -164,3 +164,18 @@ func TestParsePortRangesInvalid(t *testing.T) {
 		}
 	}
 }
+
+// TestParsePortsLineMalformed rejects lines without exactly a keyword and a
+// port list instead of indexing past them (found by FuzzPortsLine).
+func TestParsePortsLineMalformed(t *testing.T) {
+	for _, line := range []string{"", "accept", "reject", "allow 80", "accept 80 443", "accept  80"} {
+		var p Ports
+		if err := ParsePortsLine(&p, line); err == nil {
+			t.Fatalf("%q accepted", line)
+		}
+	}
+	var p Ports
+	if err := ParsePortsLine(&p, "accept 80"); err != nil || !p.IsAllowed(80) {
+		t.Fatalf("valid line rejected: %v", err)
+	}
+}

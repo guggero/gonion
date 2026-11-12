@@ -203,6 +203,9 @@ func parseAccept(s string) (Ports, error) {
 // ParsePortsLine parses a "reject/accept" policy line, e.g. "accept 20-21,23".
 func ParsePortsLine(dst *Ports, s string) error {
 	separated := strings.Split(s, " ")
+	if len(separated) != 2 || (separated[0] != "accept" && separated[0] != "reject") {
+		return fmt.Errorf("invalid port policy %q", s)
+	}
 
 	if separated[0] == "reject" && separated[1] == "1-65535" {
 		*dst = Ports{}

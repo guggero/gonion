@@ -41,17 +41,35 @@ func (c *Circuit) ExtendTo(relay *common.RouterStatus) error {
 }
 
 // BuildPath creates the onion path for relays[0]=guard … relays[n-1]=exit.
-// The circuit must be empty; hop 0 is created, the rest are extended.
+// The circuit must be empty; hop 0 is created, the rest are extended. The id
+// argument is retained for source compatibility (see NewCircuit).
 func (c *Conn) BuildPath(id uint32, relays []*common.RouterStatus) (*Circuit, error) {
+	_ = id
+	return c.BuildPathContext(context.Background(), relays)
+}
+
+// BuildPathContext is BuildPath bound to ctx. Cancellation tears down only
+// the circuit being built, never the connection, which other circuits may
+// share. Every step is also bounded by CIRCUIT_BUILD_TIMEOUT.
+func (c *Conn) BuildPathContext(ctx context.Context, relays []*common.RouterStatus) (*Circuit, error) {
 	if len(relays) == 0 {
 		return nil, Public(ErrCircuit, "empty path")
 	}
-	circ, err := c.NewCircuitTo(id, relays[0])
+	if err := c.CheckRelayIdentity(relays[0]); err != nil {
+		return nil, err
+	}
+	hs, err := newNTorHandshake(relays[0])
+	if err != nil {
+		return nil, fail(c.ctx, ErrCircuit, "build ntor handshake failed", err)
+	}
+	stepCtx, cancel := context.WithTimeout(ctx, CIRCUIT_BUILD_TIMEOUT)
+	circ, err := c.NewCircuitContext(stepCtx, handshakes.HTYPE_NTOR, hs)
+	cancel()
 	if err != nil {
 		return nil, err
 	}
 	for i, r := range relays[1:] {
-		if err := circ.ExtendTo(r); err != nil {
+		if err := circ.extendToContext(ctx, r); err != nil {
 			// Path-bias accounting (pkg/path) must tell a guard-handshake
 			// failure from a failure after the guarded build committed a second
 			// hop (path-spec §7.1). Wrap the error with the hops that were open.
@@ -61,6 +79,21 @@ func (c *Conn) BuildPath(id uint32, relays []*common.RouterStatus) (*Circuit, er
 		}
 	}
 	return circ, nil
+}
+
+// extendToContext is ExtendTo bound to ctx and CIRCUIT_BUILD_TIMEOUT.
+func (c *Circuit) extendToContext(ctx context.Context, relay *common.RouterStatus) error {
+	lspecs, err := linkSpecsFor(relay)
+	if err != nil {
+		return fail(c.Ctx, ErrExtend, "build link specs failed", err)
+	}
+	hs, err := newNTorHandshake(relay)
+	if err != nil {
+		return fail(c.Ctx, ErrExtend, "build ntor handshake failed", err)
+	}
+	stepCtx, cancel := context.WithTimeout(ctx, CIRCUIT_BUILD_TIMEOUT)
+	defer cancel()
+	return c.ExtendContext(stepCtx, lspecs, handshakes.HTYPE_NTOR, hs)
 }
 
 // pathBiasHopsError marks a multi-hop build that failed inside its extension

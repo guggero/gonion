@@ -9,17 +9,43 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/robogg133/gonion/pkg/common"
 	"github.com/robogg133/gonion/pkg/parsers/usual"
 )
 
+// Structural consensus excerpts committed with the parser tests (see
+// pkg/parsers/usual/testdata/README.md). They are not authenticated, which
+// these storage tests don't need.
+const (
+	nsFixture        = "../../../parsers/usual/testdata/ns.fixture"
+	microdescFixture = "../../../parsers/usual/testdata/microdesc.fixture"
+)
+
+// readFixture returns a fixture's bytes, failing the test if it is missing.
+func readFixture(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+// parseFixture parses a fixture, failing the test on error.
+func parseFixture(t *testing.T, data []byte) *common.Consensus {
+	t.Helper()
+	c, err := (usual.Parser{}).Parse(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
 func TestStoreReload(t *testing.T) {
-	for _, tc := range []struct{ fixture, name string }{{"consensus.txt", cachedConsensusFile}, {"consensus-microdesc.txt", cachedMicrodescConsensusFile}} {
+	for _, tc := range []struct{ fixture, name string }{{nsFixture, cachedConsensusFile}, {microdescFixture, cachedMicrodescConsensusFile}} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
-			data, err := os.ReadFile("../../../../internal/tests/" + tc.fixture)
-			if err != nil {
-				t.Fatal(err)
-			}
+			data := readFixture(t, tc.fixture)
 			c, err := (usual.Parser{}).Parse(bytes.NewReader(data))
 			if err != nil {
 				t.Fatal(err)
@@ -89,8 +115,7 @@ func TestD21SyncRenameFailure(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
-			data, _ := os.ReadFile("../../../../internal/tests/consensus.txt")
-			c, _ := (usual.Parser{}).Parse(bytes.NewReader(data))
+			c := parseFixture(t, readFixture(t, nsFixture))
 			c.RelayInformation = c.RelayInformation[:min(1, len(c.RelayInformation))]
 			restore := hook(io.ErrUnexpectedEOF)
 			defer restore()
@@ -115,8 +140,7 @@ func TestD21StaleTempIgnored(t *testing.T) {
 
 func TestD21EqualEpochConflict(t *testing.T) {
 	dir := t.TempDir()
-	data, _ := os.ReadFile("../../../../internal/tests/consensus.txt")
-	c, _ := (usual.Parser{}).Parse(bytes.NewReader(data))
+	c := parseFixture(t, readFixture(t, nsFixture))
 	c.RelayInformation = c.RelayInformation[:min(1, len(c.RelayInformation))]
 	// store once
 	st, _ := New(dir)
@@ -139,8 +163,8 @@ func TestD21EqualEpochConflict(t *testing.T) {
 
 func TestD21AlteredHydratedFieldsNotTrusted(t *testing.T) {
 	dir := t.TempDir()
-	data, _ := os.ReadFile("../../../../internal/tests/consensus-microdesc.txt")
-	c, _ := (usual.Parser{}).Parse(bytes.NewReader(data))
+	data := readFixture(t, microdescFixture)
+	c := parseFixture(t, data)
 	c.RelayInformation = c.RelayInformation[:min(1, len(c.RelayInformation))]
 	st, _ := New(dir)
 	if err := st.StoreConsensus(c); err != nil {
@@ -172,8 +196,8 @@ func TestD21PartialJSON(t *testing.T) {
 
 func TestD21OriginalByteReauthentication(t *testing.T) {
 	dir := t.TempDir()
-	data, _ := os.ReadFile("../../../../internal/tests/consensus-microdesc.txt")
-	c, _ := (usual.Parser{}).Parse(bytes.NewReader(data))
+	data := readFixture(t, microdescFixture)
+	c := parseFixture(t, data)
 	c.RelayInformation = c.RelayInformation[:min(1, len(c.RelayInformation))]
 	st, _ := New(dir)
 	if err := st.StoreConsensus(c); err != nil {
@@ -190,10 +214,7 @@ func TestD21OriginalByteReauthentication(t *testing.T) {
 }
 
 func TestRejectMislabeledCache(t *testing.T) {
-	data, err := os.ReadFile("../../../../internal/tests/consensus-microdesc.txt")
-	if err != nil {
-		t.Fatal(err)
-	}
+	data := readFixture(t, microdescFixture)
 	for _, data := range [][]byte{data, []byte(`{"NetowrkStatusVersion":3}`)} {
 		dir := t.TempDir()
 		if err := os.WriteFile(filepath.Join(dir, cachedConsensusFile), data, 0600); err != nil {

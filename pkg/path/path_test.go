@@ -113,22 +113,22 @@ func TestSelectionRequiresAuthenticatedLiveConsensus(t *testing.T) {
 
 func TestConsensusWeights(t *testing.T) {
 	// path-spec 2.2 / dir-spec 3.4.1; C Tor node_select.c uses Wme, and
-	// treats BadExit as a non-exit for both positional and directory weights.
-	weights := common.BandWidthWeight{Wgg: 1, Wgd: 2, Wmm: 3, Wmg: 4, Wme: 5, Wmd: 6, Wmb: 7, Wgb: 8, Web: 9, Wdb: 10}
+	// treats BadExit as a non-exit for the positional weights.
+	weights := common.BandWidthWeight{Wgg: 1, Wgd: 2, Wmm: 3, Wmg: 4, Wme: 5, Wmd: 6}
 	for _, tc := range []struct {
-		guard, exit, bad   bool
-		middle, dir, entry int64
+		guard, exit, bad bool
+		middle, entry    int64
 	}{
-		{false, false, false, 3, 7, 1},
-		{true, false, false, 4, 8, 1},
-		{false, true, false, 5, 9, 2},
-		{true, true, false, 6, 10, 2},
-		{false, true, true, 3, 7, 1},
-		{true, true, true, 4, 8, 1},
+		{false, false, false, 3, 1},
+		{true, false, false, 4, 1},
+		{false, true, false, 5, 2},
+		{true, true, false, 6, 2},
+		{false, true, true, 3, 1},
+		{true, true, true, 4, 1},
 	} {
 		var flags [15]bool
 		flags[common.FLAG_GUARD], flags[common.FLAG_EXIT], flags[common.FLAG_BAD_EXIT] = tc.guard, tc.exit, tc.bad
-		if middleWeightFunc(flags, weights) != tc.middle || directoryWeight(flags, weights) != tc.dir || guardWeightFunc(flags, weights) != tc.entry {
+		if middleWeightFunc(flags, weights) != tc.middle || guardWeightFunc(flags, weights) != tc.entry {
 			t.Fatalf("wrong weighting for %+v", tc)
 		}
 	}
@@ -143,10 +143,12 @@ func TestConsensusWeights(t *testing.T) {
 	if err := sl.SelectRandomCircuit(3, 80); err == nil {
 		t.Fatal("explicit zero guard weights fell back to bandwidth")
 	}
+	// The BEGIN_DIR weights are for choosing directory caches; they never
+	// change circuit selection (C Tor applies them only for WEIGHT_FOR_DIR).
 	sl.weight.Wgg, sl.weight.Wgd = 10000, 10000
-	sl.weight.Wgb = 0
-	if err := sl.SelectRandomCircuit(3, 80); err == nil {
-		t.Fatal("explicit zero BEGIN_DIR multiplier ignored")
+	sl.weight.Wgb, sl.weight.Wmb, sl.weight.Web, sl.weight.Wdb = 0, 0, 0, 0
+	if err := sl.SelectRandomCircuit(3, 80); err != nil {
+		t.Fatalf("zero BEGIN_DIR weights blocked circuit selection: %v", err)
 	}
 	// Legal scale products can exceed uint64. Selection must not overflow.
 	var total big.Int
@@ -307,8 +309,21 @@ func TestForbiddenExitValidationVectors(t *testing.T) {
 	exitOnly := base
 	exitOnly.StatusFlags = plain
 	exitOnly.StatusFlags[common.FLAG_EXIT] = true
+	if exitValidateFunc(exitOnly) {
+		t.Fatal("exit without the Fast flag accepted")
+	}
+	exitOnly.StatusFlags[common.FLAG_FAST] = true
 	if !exitValidateFunc(exitOnly) {
 		t.Fatal("plain exit rejected")
+	}
+	middle := base
+	middle.StatusFlags = plain
+	if middleValideFunc(middle) {
+		t.Fatal("middle without the Fast flag accepted")
+	}
+	middle.StatusFlags[common.FLAG_FAST] = true
+	if !middleValideFunc(middle) {
+		t.Fatal("plain middle rejected")
 	}
 	badExit := exitOnly
 	badExit.StatusFlags[common.FLAG_BAD_EXIT] = true
@@ -349,6 +364,7 @@ func TestForbiddenExitValidationVectors(t *testing.T) {
 	}
 	sl.list[0].StatusFlags = plain
 	sl.list[0].StatusFlags[common.FLAG_EXIT] = true
+	sl.list[0].StatusFlags[common.FLAG_FAST] = true
 	sl.list[0].StatusFlags[common.FLAG_BAD_EXIT] = true
 	sl.list[0].StatusFlags[common.FLAG_RUNNING], sl.list[0].StatusFlags[common.FLAG_VALID] = true, true
 	sl.list[0].Ports = allPorts
@@ -369,7 +385,7 @@ func TestPortPolicySelectionVectors(t *testing.T) {
 	sl := New(trustedTestConsensus(t, time.Now()), false)
 	relay := sl.list[0]
 	relay.StatusFlags = [15]bool{}
-	relay.StatusFlags[common.FLAG_EXIT] = true
+	relay.StatusFlags[common.FLAG_EXIT], relay.StatusFlags[common.FLAG_FAST] = true, true
 	relay.StatusFlags[common.FLAG_RUNNING], relay.StatusFlags[common.FLAG_VALID] = true, true
 	relay.Ports = common.Ports{} // reject *:*
 	sl.list = []common.RouterStatus{relay}

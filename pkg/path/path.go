@@ -234,21 +234,15 @@ func (sl *Selector) selectRelay(fn validateFunc, wfn weightFunc, desiredPort uin
 			continue
 		}
 
+		// Only the positional weights apply: the Wxb weights are for
+		// choosing a directory cache, not a circuit hop.
 		w := weightedBandwidth(v.BandWidth, wfn(v.StatusFlags, sl.weight))
 		if w <= 0 {
-			continue
-		}
-		dirWeight := int64(sl.consensus.Parameter("bwweightscale", 10000, 1, 1<<31-1))
-		if v.StatusFlags[common.FLAG_V2DIR] {
-			dirWeight = directoryWeight(v.StatusFlags, sl.weight)
-		}
-		if dirWeight <= 0 {
 			continue
 		}
 		var entry value
 		entry.ptr = v
 		entry.wb.SetInt64(w)
-		entry.wb.Mul(&entry.wb, big.NewInt(dirWeight))
 		totalBw.Add(&totalBw, &entry.wb)
 		values = append(values, entry)
 	}
@@ -328,20 +322,6 @@ func weightedBandwidth(bw uint32, positionWeight int64) int64 {
 		return 0
 	}
 	return int64(min(uint64(bw)*1000, 1<<31-1)) * positionWeight
-}
-
-func directoryWeight(flags [15]bool, weights common.BandWidthWeight) int64 {
-	isExit := flags[common.FLAG_EXIT] && !flags[common.FLAG_BAD_EXIT]
-	switch {
-	case flags[common.FLAG_GUARD] && isExit:
-		return int64(weights.Wdb)
-	case flags[common.FLAG_GUARD]:
-		return int64(weights.Wgb)
-	case isExit:
-		return int64(weights.Web)
-	default:
-		return int64(weights.Wmb)
-	}
 }
 
 func selectRandom(totalBw *big.Int, values []value) (*common.RouterStatus, error) {

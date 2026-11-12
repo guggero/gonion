@@ -15,5 +15,6 @@ func exitValidateFunc(r common.RouterStatus) bool {
 	if !r.StatusFlags[common.FLAG_EXIT] || r.StatusFlags[common.FLAG_BAD_EXIT] {
 		return false
 	}
-	return true
+	// path-spec: no relay without the Fast flag in any non-testing circuit.
+	return r.StatusFlags[common.FLAG_FAST]
 }

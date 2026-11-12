@@ -24,6 +24,12 @@ const (
 	idEd25519Prefix    = "id ed25519 "
 )
 
+// MaxDigests is the most microdescriptors one directory request may ask
+// for. dir-spec's limit of 92 is for squid proxy URL lengths on plain HTTP
+// directory connections; requests tunneled over BEGIN_DIR can ask for 500,
+// like C tor does (max_dl_per_request).
+const MaxDigests = 500
+
 type Parser struct{}
 
 func (Parser) Parse(r io.Reader, digests []string) ([]*common.Microdesc, error) {
@@ -31,7 +37,7 @@ func (Parser) Parse(r io.Reader, digests []string) ([]*common.Microdesc, error) 
 	if err != nil {
 		return nil, err
 	}
-	if len(digests) > 92 {
+	if len(digests) > MaxDigests {
 		return nil, fmt.Errorf("microdescriptor: too many requested digests")
 	}
 	for _, digest := range digests {
@@ -107,6 +113,10 @@ func (Parser) Format(ms []*common.Microdesc) ([]byte, error) {
 // parseMicrodescFile splits received bytes into bounded digest-addressed blocks.
 func parseMicrodescFile(scanner *bufio.Scanner, digests []string) ([]*common.Microdesc, error) {
 	out := make([]*common.Microdesc, len(digests))
+	wanted := make(map[string][]int, len(digests))
+	for i, digest := range digests {
+		wanted[digest] = append(wanted[digest], i)
+	}
 	var builder bytes.Buffer
 	flush := func() error {
 		if builder.Len() == 0 {
@@ -115,11 +125,8 @@ func parseMicrodescFile(scanner *bufio.Scanner, digests []string) ([]*common.Mic
 		block := builder.Bytes()
 		sum := sha256.Sum256(block)
 		digest := base64.RawStdEncoding.EncodeToString(sum[:])
-		for i, wanted := range digests {
-			if digest != wanted {
-				continue
-			}
-			m, err := common.ParseMicrodescriptor(block, wanted)
+		for _, i := range wanted[digest] {
+			m, err := common.ParseMicrodescriptor(block, digest)
 			if err != nil {
 				return err
 			}

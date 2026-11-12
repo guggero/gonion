@@ -3,6 +3,7 @@ package gonion
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 
 	"errors"
 
@@ -91,5 +92,30 @@ func TestDirectoryResponseBounds(t *testing.T) {
 	}
 	if _, _, err := consensusRequestPath("invalid"); err == nil {
 		t.Fatal("invalid flavor accepted")
+	}
+}
+
+// TestBuildURLBatchLimit allows up to maxMicrodescsPerRequest digests per
+// tunneled request and rejects more.
+func TestBuildURLBatchLimit(t *testing.T) {
+	digest := base64.RawStdEncoding.EncodeToString(make([]byte, 32))
+	batch := func(n int) []string {
+		out := make([]string, n)
+		for i := range out {
+			out[i] = digest
+		}
+		return out
+	}
+	url, err := buildURL(batch(maxMicrodescsPerRequest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := maxMicrodescsPerRequest*len(digest) + maxMicrodescsPerRequest - 1; len(url) != want {
+		t.Fatalf("url length %d, want %d", len(url), want)
+	}
+	for _, n := range []int{0, maxMicrodescsPerRequest + 1} {
+		if _, err := buildURL(batch(n)); err == nil {
+			t.Fatalf("%d digests accepted", n)
+		}
 	}
 }

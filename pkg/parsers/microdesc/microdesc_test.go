@@ -59,3 +59,37 @@ func TestOfficialMicrodescriptor(t *testing.T) {
 		}
 	}
 }
+
+// TestParseFullRequest fills the found descriptor at every position it was
+// requested in, out of a request of MaxDigests digests, and rejects larger
+// requests.
+func TestParseFullRequest(t *testing.T) {
+	data, err := os.ReadFile("tor-test-md.fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(data)
+	found := base64.RawStdEncoding.EncodeToString(sum[:])
+
+	digests := make([]string, MaxDigests)
+	for i := range digests {
+		other := sha256.Sum256([]byte{byte(i), byte(i >> 8)})
+		digests[i] = base64.RawStdEncoding.EncodeToString(other[:])
+	}
+	digests[3], digests[MaxDigests-1] = found, found
+
+	out, err := (Parser{}).Parse(bytes.NewReader(data), digests)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, md := range out {
+		want := i == 3 || i == MaxDigests-1
+		if (md != nil) != want {
+			t.Fatalf("descriptor %d present=%v", i, md != nil)
+		}
+	}
+
+	if _, err := (Parser{}).Parse(bytes.NewReader(data), append(digests, found)); err == nil {
+		t.Fatal("request above the limit accepted")
+	}
+}

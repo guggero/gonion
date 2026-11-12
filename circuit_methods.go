@@ -131,9 +131,13 @@ func (c *Circuit) getMicrodescriptors(ctx context.Context, src []string) ([]*com
 	return (microdesc.Parser{}).Parse(bytes.NewReader(data), src)
 }
 
+// maxMicrodescsPerRequest is the most digests one microdescriptor request
+// asks for; all of gonion's directory requests are tunneled over BEGIN_DIR.
+const maxMicrodescsPerRequest = microdesc.MaxDigests
+
 func buildURL(digests []string) (string, error) {
-	if len(digests) == 0 || len(digests) > 92 {
-		return "", Public(ErrDirectory, "microdescriptor request must contain 1 to 92 digests")
+	if len(digests) == 0 || len(digests) > maxMicrodescsPerRequest {
+		return "", Publicf(ErrDirectory, "microdescriptor request must contain 1 to %d digests", maxMicrodescsPerRequest)
 	}
 	for _, digest := range digests {
 		b, err := base64.RawStdEncoding.Strict().DecodeString(digest)

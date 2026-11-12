@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"math/big"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/robogg133/gonion/pkg/common"
@@ -420,69 +421,53 @@ func hydrateConsensus(ctx context.Context, candidate, previous *common.Consensus
 		}
 		indices[r.MicrodescriptorDigest] = append(indices[r.MicrodescriptorDigest], i)
 	}
-	for offset := 0; offset < len(missing); offset += 91 {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		digests := missing[offset:min(offset+91, len(missing))]
-		descriptors := make([]*common.Microdesc, len(digests))
-		var need []string
-		for i, digest := range digests {
-			if old != nil {
-				if raw := old.Microdescriptors[digest]; len(raw) > 0 {
-					parsed, err := (microdesc.Parser{}).Parse(bytes.NewReader(raw), []string{digest})
-					if err == nil {
-						descriptors[i] = parsed[0]
-					}
-				}
-			}
-			if descriptors[i] == nil {
-				need = append(need, digest)
-			}
-		}
-		if len(need) != 0 {
-			fetched, err := fetch(need)
-			if err != nil {
-				return nil, err
-			}
-			if len(fetched) != len(need) {
-				return nil, Public(ErrDirectory, "microdescriptor response count mismatch")
-			}
-			j := 0
-			for i := range descriptors {
-				if descriptors[i] == nil {
-					descriptors[i] = fetched[j]
-					j++
+	// Reuse cached microdescriptors, fetch the rest. A cached parsed model
+	// is not evidence: every descriptor is re-verified below.
+	descriptors := make([]*common.Microdesc, len(missing))
+	var need []int
+	for i, digest := range missing {
+		if old != nil {
+			if raw := old.Microdescriptors[digest]; len(raw) > 0 {
+				parsed, err := (microdesc.Parser{}).Parse(bytes.NewReader(raw), []string{digest})
+				if err == nil {
+					descriptors[i] = parsed[0]
 				}
 			}
 		}
-		for i, md := range descriptors {
-			if md == nil {
-				return nil, Publicf(ErrDirectory, "missing microdescriptor %s", digests[i])
+		if descriptors[i] == nil {
+			need = append(need, i)
+		}
+	}
+	if err := fetchMicrodescriptors(ctx, missing, need, descriptors, fetch); err != nil {
+		return nil, err
+	}
+
+	for i, md := range descriptors {
+		if md == nil {
+			return nil, Publicf(ErrDirectory, "missing microdescriptor %s", missing[i])
+		}
+		// A parsed cached model is not evidence: authenticate its original bytes.
+		checked, err := (microdesc.Parser{}).Parse(bytes.NewReader(md.RawDocument), []string{missing[i]})
+		if err != nil || checked[0] == nil {
+			return nil, Public(ErrDirectory, "microdescriptor digest verification failed")
+		}
+		md = checked[0]
+		out.Microdescriptors[missing[i]] = bytes.Clone(md.RawDocument)
+		key, err := ecdh.X25519().NewPublicKey(md.NTorOnionKey)
+		if err != nil || (len(md.IdEd25519) != 0 && len(md.IdEd25519) != 32) {
+			return nil, Public(ErrDirectory, "invalid microdescriptor key")
+		}
+		for _, index := range indices[missing[i]] {
+			r := &out.RelayInformation[index]
+			r.OnionKey, r.NTorOnionKey, r.IdEd25519 = md.OnionKey, key, md.IdEd25519
+			r.Family, r.Familys = md.Family, md.Familys
+			if md.ExitRules != nil {
+				r.Ports = *md.ExitRules
 			}
-			// A parsed cached model is not evidence: authenticate its original bytes.
-			checked, err := (microdesc.Parser{}).Parse(bytes.NewReader(md.RawDocument), []string{digests[i]})
-			if err != nil || checked[0] == nil {
-				return nil, Public(ErrDirectory, "microdescriptor digest verification failed")
+			if r.StatusFlags[common.FLAG_NO_ED_CONSENSUS] {
+				r.IdEd25519 = nil
 			}
-			md = checked[0]
-			out.Microdescriptors[digests[i]] = bytes.Clone(md.RawDocument)
-			key, err := ecdh.X25519().NewPublicKey(md.NTorOnionKey)
-			if err != nil || (len(md.IdEd25519) != 0 && len(md.IdEd25519) != 32) {
-				return nil, Public(ErrDirectory, "invalid microdescriptor key")
-			}
-			for _, index := range indices[digests[i]] {
-				r := &out.RelayInformation[index]
-				r.OnionKey, r.NTorOnionKey, r.IdEd25519 = md.OnionKey, key, md.IdEd25519
-				r.Family, r.Familys = md.Family, md.Familys
-				if md.ExitRules != nil {
-					r.Ports = *md.ExitRules
-				}
-				if r.StatusFlags[common.FLAG_NO_ED_CONSENSUS] {
-					r.IdEd25519 = nil
-				}
-				r.MicrodescriptorLoaded = true
-			}
+			r.MicrodescriptorLoaded = true
 		}
 	}
 	if ctx.Err() != nil {
@@ -492,6 +477,85 @@ func hydrateConsensus(ctx context.Context, candidate, previous *common.Consensus
 		return nil, Public(ErrDirectory, "consensus is empty, incomplete, or expired during hydration")
 	}
 	return candidate.OwnAuthenticatedHydration(out.Microdescriptors)
+}
+
+const (
+	// microdescBatchSize is the number of digests per microdescriptor
+	// request. Relays limit BEGIN_DIR streams per circuit (C tor's
+	// DoSBeginDirBurst of 60, refilled at 10 per second) and destroy a
+	// circuit that exceeds it, so a bootstrap must stay at a few dozen
+	// requests: about 20 for 9400 relays.
+	microdescBatchSize = maxMicrodescsPerRequest
+
+	// microdescFetchParallelism is the number of microdescriptor requests
+	// in flight at once, so a bootstrap isn't bound by the round trip of
+	// each request in turn.
+	microdescFetchParallelism = 4
+)
+
+// fetchMicrodescriptors fetches the descriptors of digests[i] for every i in
+// need, in batches, several at a time, and stores each in descriptors[i]. It
+// stops starting new batches after the first error and returns it.
+func fetchMicrodescriptors(ctx context.Context, digests []string, need []int, descriptors []*common.Microdesc, fetch func([]string) ([]*common.Microdesc, error)) error {
+	var batches [][]int
+	for offset := 0; offset < len(need); offset += microdescBatchSize {
+		batches = append(batches, need[offset:min(offset+microdescBatchSize, len(need))])
+	}
+
+	var (
+		mu       sync.Mutex
+		next     int
+		firstErr error
+		wg       sync.WaitGroup
+	)
+	// take returns the next batch, or nil once done or after an error.
+	take := func() []int {
+		mu.Lock()
+		defer mu.Unlock()
+		if firstErr != nil || next == len(batches) {
+			return nil
+		}
+		if err := ctx.Err(); err != nil {
+			firstErr = err
+			return nil
+		}
+		batch := batches[next]
+		next++
+		return batch
+	}
+	for range min(microdescFetchParallelism, len(batches)) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for batch := take(); batch != nil; batch = take() {
+				want := make([]string, len(batch))
+				for i, index := range batch {
+					want[i] = digests[index]
+				}
+				fetched, err := fetch(want)
+				if err == nil && len(fetched) != len(want) {
+					err = Public(ErrDirectory, "microdescriptor response count mismatch")
+				}
+				mu.Lock()
+				if err != nil {
+					if firstErr == nil {
+						firstErr = err
+					}
+				} else {
+					// Each batch writes its own indices only.
+					for i, index := range batch {
+						descriptors[index] = fetched[i]
+					}
+				}
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	if firstErr != nil {
+		return firstErr
+	}
+	return ctx.Err()
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) error {

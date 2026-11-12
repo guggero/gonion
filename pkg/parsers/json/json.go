@@ -51,12 +51,15 @@ type dtoConsensus struct {
 	HasSharedCurrentValue  bool
 	HsdirInterval          *uint64
 	Params                 map[string]int32
-	ValidAfter             time.Time
-	FreshUntil             time.Time
-	ValidUntil             time.Time
-	SharedCurrentValue     string
-	RelayInformation       []dtoRouterStatus
-	BandWidthWeight        common.BandWidthWeight
+	// The client protocol lists of the consensus.
+	RequiredClientProtocols    string `json:",omitempty"`
+	RecommendedClientProtocols string `json:",omitempty"`
+	ValidAfter                 time.Time
+	FreshUntil                 time.Time
+	ValidUntil                 time.Time
+	SharedCurrentValue         string
+	RelayInformation           []dtoRouterStatus
+	BandWidthWeight            common.BandWidthWeight
 }
 
 type dtoRouterStatus struct {
@@ -87,22 +90,24 @@ type dtoRouterStatus struct {
 
 func dtoFromConsensus(c *common.Consensus) *dtoConsensus {
 	d := &dtoConsensus{
-		NetowrkStatusVersion:   c.NetowrkStatusVersion,
-		Flavor:                 c.Flavor,
-		RawDocument:            bytes.Clone(c.RawDocument),
-		AuthorityCertificates:  bytes.Clone(c.AuthorityCertificates),
-		Microdescriptors:       c.Microdescriptors,
-		SharedPreviousValue:    base64.StdEncoding.EncodeToString(c.SharedPreviousValue[:]),
-		HasSharedPreviousValue: c.HasSharedPreviousValue,
-		HasSharedCurrentValue:  c.HasSharedCurrentValue,
-		HsdirInterval:          c.HsdirInterval,
-		Params:                 c.Params,
-		ValidAfter:             c.ValidAfter,
-		FreshUntil:             c.FreshUntil,
-		ValidUntil:             c.ValidUntil,
-		SharedCurrentValue:     base64.StdEncoding.EncodeToString(c.SharedCurrentValue[:]),
-		BandWidthWeight:        c.BandWidthWeight,
-		RelayInformation:       make([]dtoRouterStatus, len(c.RelayInformation)),
+		NetowrkStatusVersion:       c.NetowrkStatusVersion,
+		Flavor:                     c.Flavor,
+		RawDocument:                bytes.Clone(c.RawDocument),
+		AuthorityCertificates:      bytes.Clone(c.AuthorityCertificates),
+		Microdescriptors:           c.Microdescriptors,
+		SharedPreviousValue:        base64.StdEncoding.EncodeToString(c.SharedPreviousValue[:]),
+		HasSharedPreviousValue:     c.HasSharedPreviousValue,
+		HasSharedCurrentValue:      c.HasSharedCurrentValue,
+		HsdirInterval:              c.HsdirInterval,
+		Params:                     c.Params,
+		RequiredClientProtocols:    c.RequiredClientProtocols,
+		RecommendedClientProtocols: c.RecommendedClientProtocols,
+		ValidAfter:                 c.ValidAfter,
+		FreshUntil:                 c.FreshUntil,
+		ValidUntil:                 c.ValidUntil,
+		SharedCurrentValue:         base64.StdEncoding.EncodeToString(c.SharedCurrentValue[:]),
+		BandWidthWeight:            c.BandWidthWeight,
+		RelayInformation:           make([]dtoRouterStatus, len(c.RelayInformation)),
 	}
 	for i := range c.RelayInformation {
 		rs := &c.RelayInformation[i]
@@ -138,20 +143,22 @@ func (d *dtoConsensus) toConsensus() (*common.Consensus, error) {
 		return nil, fmt.Errorf("json: too many relays")
 	}
 	c := &common.Consensus{
-		NetowrkStatusVersion:   d.NetowrkStatusVersion,
-		Flavor:                 d.Flavor,
-		RawDocument:            bytes.Clone(d.RawDocument),
-		AuthorityCertificates:  bytes.Clone(d.AuthorityCertificates),
-		Microdescriptors:       d.Microdescriptors,
-		HasSharedPreviousValue: d.HasSharedPreviousValue,
-		HasSharedCurrentValue:  d.HasSharedCurrentValue,
-		HsdirInterval:          d.HsdirInterval,
-		Params:                 d.Params,
-		ValidAfter:             d.ValidAfter,
-		FreshUntil:             d.FreshUntil,
-		ValidUntil:             d.ValidUntil,
-		BandWidthWeight:        d.BandWidthWeight,
-		RelayInformation:       make([]common.RouterStatus, len(d.RelayInformation)),
+		NetowrkStatusVersion:       d.NetowrkStatusVersion,
+		Flavor:                     d.Flavor,
+		RawDocument:                bytes.Clone(d.RawDocument),
+		AuthorityCertificates:      bytes.Clone(d.AuthorityCertificates),
+		Microdescriptors:           d.Microdescriptors,
+		HasSharedPreviousValue:     d.HasSharedPreviousValue,
+		HasSharedCurrentValue:      d.HasSharedCurrentValue,
+		HsdirInterval:              d.HsdirInterval,
+		Params:                     d.Params,
+		RequiredClientProtocols:    d.RequiredClientProtocols,
+		RecommendedClientProtocols: d.RecommendedClientProtocols,
+		ValidAfter:                 d.ValidAfter,
+		FreshUntil:                 d.FreshUntil,
+		ValidUntil:                 d.ValidUntil,
+		BandWidthWeight:            d.BandWidthWeight,
+		RelayInformation:           make([]common.RouterStatus, len(d.RelayInformation)),
 	}
 	if d.SharedPreviousValue != "" {
 		b, err := base64.StdEncoding.Strict().DecodeString(d.SharedPreviousValue)

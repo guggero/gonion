@@ -53,6 +53,16 @@ type consensusOptions struct {
 	// stamps overrides valid-after/valid-until; fresh-until stays one hour
 	// after valid-after, giving a one-hour voting interval.
 	validAfter, validUntil time.Time
+	// requiredClient and recommendedClient sign client protocol lists into
+	// the header (omitted when empty).
+	requiredClient, recommendedClient string
+}
+
+// ConsensusWithProtocols signs the test network with the given
+// required-client-protocols and recommended-client-protocols lines.
+func ConsensusWithProtocols(t testing.TB, now time.Time, required, recommended string) *common.Consensus {
+	t.Helper()
+	return consensus(t, now, consensusOptions{requiredClient: required, recommendedClient: recommended})
 }
 
 // Consensus signs a small test network for the supplied time, then verifies it
@@ -177,6 +187,12 @@ func consensus(t testing.TB, now time.Time, o consensusOptions) *common.Consensu
 		encode := func(b [32]byte) string { return base64.StdEncoding.EncodeToString(b[:]) }
 		fmt.Fprintf(&body, "shared-rand-current-value 0 %s\n", encode(o.srv[0]))
 		fmt.Fprintf(&body, "shared-rand-previous-value 0 %s\n", encode(o.srv[1]))
+	}
+	if o.recommendedClient != "" {
+		fmt.Fprintf(&body, "recommended-client-protocols %s\n", o.recommendedClient)
+	}
+	if o.requiredClient != "" {
+		fmt.Fprintf(&body, "required-client-protocols %s\n", o.requiredClient)
 	}
 	if o.hsdirInterval != 0 {
 		fmt.Fprintf(&body, "params hsdir_interval=%d\n", o.hsdirInterval)

@@ -231,6 +231,10 @@ func New(ctx context.Context, opts Options) (*Client, error) {
 		if errors.As(err, &permanent) {
 			return nil, permanent.error
 		}
+		// Every fallback serves the same consensus.
+		if errors.Is(err, gonion.ErrObsoleteProtocols) {
+			return nil, err
+		}
 		errs = append(errs, err)
 		if identity != [20]byte{} && opts.Bridge == nil {
 			failed[identity] = true

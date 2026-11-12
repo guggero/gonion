@@ -62,7 +62,7 @@ func parseConsensus(scanner *bufio.Scanner) (*Consensus, error) {
 			return nil, fmt.Errorf("consensus: missing initial network-status-version")
 		}
 		switch key {
-		case "network-status-version", "vote-status", "valid-after", "fresh-until", "valid-until", "shared-rand-current-value", "shared-rand-previous-value", "params":
+		case "network-status-version", "vote-status", "valid-after", "fresh-until", "valid-until", "shared-rand-current-value", "shared-rand-previous-value", "params", "required-client-protocols", "recommended-client-protocols":
 			if router != nil || footer || len(c.RelayInformation) != 0 || seen[key] {
 				return nil, fmt.Errorf("consensus: misplaced or duplicate %s", key)
 			}
@@ -161,7 +161,7 @@ func parseConsensus(scanner *bufio.Scanner) (*Consensus, error) {
 }
 
 func parseHeader(c *Consensus, f []string) error {
-	if len(f) < 2 && f[0] != "params" {
+	if len(f) < 2 && f[0] != "params" && f[0] != "required-client-protocols" && f[0] != "recommended-client-protocols" {
 		return fmt.Errorf("consensus: missing %s arguments", f[0])
 	}
 	switch f[0] {
@@ -214,6 +214,16 @@ func parseHeader(c *Consensus, f []string) error {
 		} else {
 			copy(c.SharedPreviousValue[:], b)
 			c.HasSharedPreviousValue = true
+		}
+	case "required-client-protocols", "recommended-client-protocols":
+		p, err := ParseProtocolSet(strings.Join(f[1:], " "))
+		if err != nil {
+			return fmt.Errorf("consensus: %s: %w", f[0], err)
+		}
+		if f[0] == "required-client-protocols" {
+			c.RequiredClientProtocols = p.String()
+		} else {
+			c.RecommendedClientProtocols = p.String()
 		}
 	case "params":
 		c.Params = make(map[string]int32)

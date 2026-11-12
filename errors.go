@@ -23,6 +23,9 @@ var (
 	ErrTimeout           = errors.New("gonion: timeout")
 	ErrBootstrap         = errors.New("gonion: bootstrap failed")
 	ErrDirectory         = errors.New("gonion: directory fetch failed")
+	// ErrObsoleteProtocols means the network requires client protocol
+	// capabilities this version doesn't implement: it must be updated.
+	ErrObsoleteProtocols = errors.New("gonion: client protocols obsolete")
 )
 
 // publicError is a stable API error. Message is safe for callers; Unwrap is the sentinel.

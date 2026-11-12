@@ -89,6 +89,12 @@ type Consensus struct {
 	HsdirInterval *uint64
 	Params        map[string]int32
 
+	// RequiredClientProtocols and RecommendedClientProtocols are the
+	// consensus's client protocol lists in canonical form (see
+	// ProtocolSet), empty when the consensus has none.
+	RequiredClientProtocols    string
+	RecommendedClientProtocols string
+
 	RelayInformation []RouterStatus
 
 	BandWidthWeight BandWidthWeight

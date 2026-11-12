@@ -405,6 +405,9 @@ func hydrateConsensus(ctx context.Context, candidate, previous *common.Consensus
 	if candidate.Flavor != ConsensusFlavorMicrodesc {
 		return nil, Public(ErrDirectory, "expected a live microdesc consensus")
 	}
+	if err := checkClientProtocols(ctx, candidate); err != nil {
+		return nil, err
+	}
 	out := candidate.Clone()
 	old := previous.Clone()
 	out.Microdescriptors = make(map[string][]byte)

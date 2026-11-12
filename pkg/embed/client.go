@@ -112,8 +112,9 @@ type Options struct {
 	Log io.Writer
 
 	// BootstrapAttempts is how many bootstrap connections New tries before
-	// giving up: after a network, handshake or directory failure it waits
-	// briefly and dials again, which with the default ORDialer means
+	// giving up: after a network, handshake or directory failure, or when
+	// an attempt takes longer than 45 seconds, it waits briefly and dials
+	// again, which with the default ORDialer means
 	// another randomly chosen fallback (dir-spec client operation: "On
 	// failure, the client waits briefly, then tries that network-status
 	// document again from another cache"). A fallback that already failed
@@ -129,6 +130,11 @@ const defaultBootstrapAttempts = 3
 
 // bootstrapRetryDelay is the pause between two bootstrap attempts.
 var bootstrapRetryDelay = time.Second
+
+// bootstrapAttemptTimeout bounds every bootstrap attempt but the last: a
+// fallback that serves the directory too slowly to finish in time is given
+// up for another one. A healthy fallback bootstraps in a few seconds.
+var bootstrapAttemptTimeout = 45 * time.Second
 
 // permanentError marks a bootstrap failure that another attempt can't fix,
 // like a configuration error.
@@ -215,7 +221,12 @@ func New(ctx context.Context, opts Options) (*Client, error) {
 			}
 		}
 		obs.logf("bootstrap: dialing (attempt %d of %d)", attempt, attempts)
-		c, identity, dialed, err := bootstrapOnce(ctx, dial, opts, failed)
+		attemptCtx, cancel := ctx, context.CancelFunc(func() {})
+		if attempt < attempts {
+			attemptCtx, cancel = context.WithTimeout(ctx, bootstrapAttemptTimeout)
+		}
+		c, identity, dialed, err := bootstrapOnce(attemptCtx, dial, opts, failed)
+		cancel()
 		if err == nil {
 			return c, nil
 		}

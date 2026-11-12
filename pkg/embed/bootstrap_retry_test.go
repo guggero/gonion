@@ -3,6 +3,7 @@ package embed
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"strings"
 	"testing"
@@ -107,5 +108,45 @@ func TestBootstrapRetryHonorsContext(t *testing.T) {
 	_, err := New(ctx, opts)
 	if !errors.Is(err, context.Canceled) || dials != 1 {
 		t.Fatalf("err=%v dials=%d", err, dials)
+	}
+}
+
+// TestBootstrapAttemptTimeout gives up a fallback that stalls and tries
+// another one; the last attempt has only the caller's deadline.
+func TestBootstrapAttemptTimeout(t *testing.T) {
+	fastRetries(t)
+	old := bootstrapAttemptTimeout
+	bootstrapAttemptTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { bootstrapAttemptTimeout = old })
+
+	// Fallbacks that accept the connection but never answer.
+	var peers []net.Conn
+	t.Cleanup(func() {
+		for _, p := range peers {
+			_ = p.Close()
+		}
+	})
+	dials := 0
+	opts := DefaultOptions()
+	opts.Guards = guardfixture.Manager(t)
+	opts.BootstrapAttempts = 2
+	opts.ORDialer = func(context.Context) (net.Conn, error) {
+		dials++
+		a, b := net.Pipe()
+		peers = append(peers, b)
+		go func() { _, _ = io.Copy(io.Discard, b) }()
+		return pinnedPipe{Conn: a, id: [20]byte{byte(dials)}}, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := New(ctx, opts)
+	if err == nil || dials != 2 {
+		t.Fatalf("err=%v dials=%d", err, dials)
+	}
+	// The second, last attempt ran until the caller's deadline.
+	if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) < 250*time.Millisecond {
+		t.Fatalf("last attempt cut short: %v after %v", err, time.Since(start))
 	}
 }

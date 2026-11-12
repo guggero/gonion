@@ -385,15 +385,22 @@ func (conn *Conn) publishVerifiedConsensus(ctx context.Context, c *common.Consen
 			logger(ctx).Warn().Err(err).Msg("store hydrated consensus failed")
 		}
 	}
+	// c is a fresh view of the trusted state, owned here. The process-wide
+	// GlobalConsensus isn't updated: nothing in gonion reads it, a full
+	// copy of a consensus is about 10 MB, and with several connections in
+	// one process the last one would win.
 	conn.mu.Lock()
-	conn.consensus = c.Trusted()
+	conn.consensus = c
 	conn.mu.Unlock()
-	common.SetGlobalConsensus(c.Trusted())
 	logger(ctx).Info().Int("relays", len(c.RelayInformation)).Msg("authenticated hydrated consensus published")
 }
 
-// Hydration is all-or-nothing. Cached descriptor bytes must match a digest in
-// the current consensus; cached flags, addresses, keys and booleans are ignored.
+// hydrateConsensus loads the microdescriptors of an authenticated consensus,
+// reusing previous's where the digest still matches and fetching the rest.
+// Relays whose descriptor no cache served stay unloaded, as long as enough
+// of the network is covered (see OwnAuthenticatedHydration). Cached
+// descriptor bytes must match a digest in the current consensus; cached
+// flags, addresses, keys and booleans are ignored.
 func hydrateConsensus(ctx context.Context, candidate, previous *common.Consensus, fetch func([]string) ([]*common.Microdesc, error)) (*common.Consensus, error) {
 	if candidate == nil || !candidate.IsAuthenticated() || !candidate.IsLive(time.Now().UTC()) {
 		return nil, Public(ErrDirectory, "authenticated live consensus required for hydration")

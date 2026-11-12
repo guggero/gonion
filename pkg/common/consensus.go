@@ -13,7 +13,9 @@ import (
 
 const AUTH_DIR_NUM_AGREEMENTS uint8 = 9
 
-// GlobalConsensus is retained for source compatibility only.
+// GlobalConsensus is retained for source compatibility only. gonion no longer
+// publishes bootstrapped consensuses into it; use Conn.Consensus or
+// embed.Client.Consensus.
 // Deprecated: use GetGlobalConsensus and SetGlobalConsensus. Direct access is
 // not synchronized and must not be used concurrently with publication.
 var GlobalConsensus *Consensus

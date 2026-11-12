@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -141,10 +142,19 @@ func dialPath(relays []*common.RouterStatus) (*gonion.Circuit, *gonion.Conn, err
 	return circ, conn, nil
 }
 
+// bootstrapped caches the consensus of the first bootstrap for the other
+// live tests.
+var bootstrapped struct {
+	sync.Mutex
+	cns *common.Consensus
+}
+
 func bootstrapConsensus(t *testing.T) *common.Consensus {
 	t.Helper()
-	if cns := common.GetGlobalConsensus(); cns != nil && len(cns.RelayInformation) > 100 {
-		return cns
+	bootstrapped.Lock()
+	defer bootstrapped.Unlock()
+	if bootstrapped.cns != nil {
+		return bootstrapped.cns.Clone()
 	}
 
 	dialer := fallback.New(shared.Fallbacks)
@@ -163,9 +173,10 @@ func bootstrapConsensus(t *testing.T) *common.Consensus {
 	if err := gonion.BootstrapOneConn(conn); err != nil {
 		t.Fatal(err)
 	}
-	cns := common.GetGlobalConsensus()
-	if cns == nil {
-		t.Fatal("no global consensus after bootstrap")
+	cns := conn.Consensus()
+	if cns == nil || !cns.TrustedHydrated() {
+		t.Fatal("no consensus after bootstrap")
 	}
-	return cns
+	bootstrapped.cns = cns
+	return cns.Clone()
 }

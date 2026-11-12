@@ -387,9 +387,10 @@ func NewWithConn(ctx context.Context, orConn net.Conn, opts Options) (*Client, e
 	}
 
 	c := &Client{
-		conn:           conn,
-		storage:        opts.Storage,
-		cns:            cns,
+		conn:    conn,
+		storage: opts.Storage,
+		// Consensus reads the connection's; another copy would cost
+		// about 10 MB.
 		hs:             &hs.Client{},
 		longLived:      opts.LongLived,
 		builder:        builder,

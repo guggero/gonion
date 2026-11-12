@@ -9,7 +9,6 @@ import (
 	gonion2 "github.com/robogg133/gonion"
 	"github.com/robogg133/gonion/internal/fallback"
 	"github.com/robogg133/gonion/internal/shared"
-	"github.com/robogg133/gonion/pkg/common"
 	"github.com/robogg133/gonion/pkg/path"
 )
 
@@ -36,7 +35,7 @@ func TestMicrodesc(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sl := path.New(common.GetGlobalConsensus(), false)
+	sl := path.New(conn.Consensus(), false)
 
 	if err := sl.SelectRandomCircuit(3, 80); err != nil {
 		t.Fatal(err)

@@ -4,10 +4,14 @@ import (
 	"context"
 	"errors"
 	"net"
+	"os"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
+
+	"github.com/robogg133/gonion/pkg/hs/capi"
 )
 
 // fakeConn is a sharedConn whose closing can be observed.
@@ -347,5 +351,31 @@ func waitFor(t *testing.T, cond func() bool) {
 			t.Fatal("condition not met")
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// TestClassifyGuardDialError marks the dialer's own timeout as a guard
+// connection failure, like a refused connection, but not the caller's
+// cancellation or an unrelated error.
+func TestClassifyGuardDialError(t *testing.T) {
+	var failure *capi.GuardConnectionFailure
+	timeout := &net.OpError{Op: "dial", Net: "tcp", Err: os.ErrDeadlineExceeded}
+	refused := &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}
+	for _, err := range []error{timeout, refused} {
+		if !errors.As(classifyGuardDialError(context.Background(), err), &failure) {
+			t.Fatalf("%v not a guard connection failure", err)
+		}
+	}
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if errors.As(classifyGuardDialError(canceled, timeout), &failure) {
+		t.Fatal("caller cancellation blamed on the guard")
+	}
+	if errors.As(classifyGuardDialError(context.Background(), errors.New("other")), &failure) {
+		t.Fatal("unrelated error blamed on the guard")
+	}
+	if classifyGuardDialError(context.Background(), nil) != nil {
+		t.Fatal("nil error changed")
 	}
 }

@@ -168,10 +168,25 @@ func defaultORDialer(ctx context.Context) (net.Conn, error) {
 
 func defaultGuardDialer(ctx context.Context, guard *common.RouterStatus) (net.Conn, error) {
 	conn, err := (&net.Dialer{Timeout: 15 * time.Second}).DialContext(ctx, "tcp", net.JoinHostPort(guard.Ipv4Addr, strconv.Itoa(int(guard.ORPort))))
-	if ctx.Err() == nil && (errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.EHOSTUNREACH) || errors.Is(err, syscall.ENETUNREACH) || errors.Is(err, syscall.ETIMEDOUT)) {
-		err = &capi.GuardConnectionFailure{Err: err}
+	return conn, classifyGuardDialError(ctx, err)
+}
+
+// classifyGuardDialError marks a failure to reach the guard itself as a
+// capi.GuardConnectionFailure, so the guard is marked unreachable and the next
+// circuit tries another one (guard-spec). That includes the dialer's own
+// timeout, a net.Error rather than ETIMEDOUT, but not the caller giving up.
+func classifyGuardDialError(ctx context.Context, err error) error {
+	if err == nil || ctx.Err() != nil {
+		return err
 	}
-	return conn, err
+	var netErr net.Error
+	if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.EHOSTUNREACH) ||
+		errors.Is(err, syscall.ENETUNREACH) || errors.Is(err, syscall.ETIMEDOUT) ||
+		(errors.As(err, &netErr) && netErr.Timeout()) {
+
+		return &capi.GuardConnectionFailure{Err: err}
+	}
+	return err
 }
 
 func (o Options) validate() error {

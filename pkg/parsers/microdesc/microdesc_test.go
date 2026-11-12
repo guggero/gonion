@@ -93,3 +93,83 @@ func TestParseFullRequest(t *testing.T) {
 		t.Fatal("request above the limit accepted")
 	}
 }
+
+// TestOnionKeyObjectOptional parses microdescriptors without the obsolete TAP
+// key object, as consensus method 37 generates them (dir-spec: the onion-key
+// item is required, its object is optional), and still rejects an object
+// that doesn't follow the onion-key item.
+func TestOnionKeyObjectOptional(t *testing.T) {
+	data, err := os.ReadFile("tor-test-md.fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	begin := bytes.Index(data, []byte("-----BEGIN RSA PUBLIC KEY-----\n"))
+	endMarker := []byte("-----END RSA PUBLIC KEY-----\n")
+	end := bytes.Index(data, endMarker) + len(endMarker)
+	if begin < 0 || end <= begin {
+		t.Fatal("fixture has no onion key object")
+	}
+	noKey := append(bytes.Clone(data[:begin]), data[end:]...)
+	if !bytes.HasPrefix(noKey, []byte("onion-key\nntor-onion-key ")) {
+		t.Fatalf("unexpected fixture layout: %q", noKey[:40])
+	}
+
+	digestOf := func(b []byte) string {
+		sum := sha256.Sum256(b)
+		return base64.RawStdEncoding.EncodeToString(sum[:])
+	}
+	for name, parse := range map[string]func([]byte) (*common.Microdesc, error){
+		"trust": func(b []byte) (*common.Microdesc, error) {
+			return common.ParseMicrodescriptor(b, digestOf(b))
+		},
+		"batch": func(b []byte) (*common.Microdesc, error) {
+			out, err := (Parser{}).Parse(bytes.NewReader(b), []string{digestOf(b)})
+			if err != nil {
+				return nil, err
+			}
+			return out[0], nil
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			md, err := parse(noKey)
+			if err != nil || md == nil {
+				t.Fatalf("method 37 descriptor rejected: %v", err)
+			}
+			if md.OnionKey != nil || len(md.NTorOnionKey) != 32 || !md.ExitRules.IsAllowed(443) {
+				t.Fatal("method 37 descriptor parsed wrong")
+			}
+
+			// The object after another item is malformed.
+			stray := append(bytes.Clone(noKey), data[begin:end]...)
+			if md, err := parse(stray); err == nil && md != nil {
+				t.Fatal("stray object accepted")
+			}
+
+			// The onion-key item itself stays mandatory.
+			noItem := bytes.TrimPrefix(noKey, []byte("onion-key\n"))
+			if md, err := parse(noItem); err == nil && md != nil {
+				t.Fatal("descriptor without onion-key item accepted")
+			}
+		})
+	}
+}
+
+// TestFormatWithoutOnionKey writes the onion-key item even without a key, so
+// the result parses again.
+func TestFormatWithoutOnionKey(t *testing.T) {
+	ntor := bytes.Repeat([]byte{7}, 32)
+	out, err := (Parser{}).Format([]*common.Microdesc{{NTorOnionKey: ntor}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(out, []byte("onion-key\nntor-onion-key ")) {
+		t.Fatalf("unexpected output %q", out)
+	}
+	block := bytes.TrimSuffix(out, []byte("\n"))
+	block = append(block, '\n')
+	sum := sha256.Sum256(block)
+	md, err := common.ParseMicrodescriptor(block, base64.RawStdEncoding.EncodeToString(sum[:]))
+	if err != nil || !bytes.Equal(md.NTorOnionKey, ntor) {
+		t.Fatalf("formatted descriptor doesn't parse: %v %q", err, out)
+	}
+}

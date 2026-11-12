@@ -66,8 +66,10 @@ func (Parser) Format(ms []*common.Microdesc) ([]byte, error) {
 		if m == nil {
 			continue
 		}
+		// The onion-key item starts every microdescriptor; its TAP key
+		// object is optional.
+		b.WriteString(onionKeyPrefix)
 		if m.OnionKey != nil {
-			b.WriteString(onionKeyPrefix)
 			if err := pem.Encode(&b, &pem.Block{Type: "RSA PUBLIC KEY", Bytes: m.OnionKey}); err != nil {
 				return nil, err
 			}

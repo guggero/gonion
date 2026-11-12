@@ -31,6 +31,11 @@ func ParseMicrodescriptor(raw []byte, digest string) (*Microdesc, error) {
 		if len(fields) == 0 {
 			continue
 		}
+		// Only an onion-key item carries an object, and it is consumed
+		// below; an object anywhere else is malformed.
+		if strings.HasPrefix(text, "-----") {
+			return nil, fmt.Errorf("microdescriptor: unexpected object")
+		}
 		key := fields[0]
 		if key == "id" && len(fields) > 1 {
 			key += " " + fields[1]
@@ -44,8 +49,15 @@ func ParseMicrodescriptor(raw []byte, digest string) (*Microdesc, error) {
 		}
 		switch key {
 		case "onion-key":
-			if text != "onion-key" || !bytes.HasPrefix(raw, []byte("-----BEGIN RSA PUBLIC KEY-----\n")) {
-				return nil, fmt.Errorf("microdescriptor: invalid onion-key PEM")
+			if text != "onion-key" {
+				return nil, fmt.Errorf("microdescriptor: invalid onion-key")
+			}
+			// dir-spec: the onion-key item starts every microdescriptor,
+			// but its obsolete TAP key object is optional (consensus
+			// method 37 omits it, 38 and later carry a dummy key). It is
+			// never used.
+			if !bytes.HasPrefix(raw, []byte("-----BEGIN RSA PUBLIC KEY-----\n")) {
+				continue
 			}
 			end := bytes.Index(raw, []byte("-----END RSA PUBLIC KEY-----\n"))
 			if end < 0 || end > 16<<10 {
@@ -111,7 +123,7 @@ func ParseMicrodescriptor(raw []byte, digest string) (*Microdesc, error) {
 		}
 	}
 	if !seen["onion-key"] || !seen["ntor-onion-key"] {
-		return nil, fmt.Errorf("microdescriptor: missing onion or ntor key")
+		return nil, fmt.Errorf("microdescriptor: missing onion-key item or ntor key")
 	}
 	return m, nil
 }

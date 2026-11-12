@@ -77,6 +77,8 @@ type stubBuilder struct {
 	failFirstStream bool
 	failBuild       bool
 	built           int
+	attempts        int
+	timeoutsFirst   int // the first builds pass the learned build timeout
 }
 
 type testGuardBuilder struct {
@@ -99,6 +101,11 @@ func (b testGuardBuilder) BuildPathContext(ctx context.Context, id uint32, relay
 }
 
 func (b *stubBuilder) BuildPath(id uint32, relays []*common.RouterStatus) (capi.Circ, error) {
+	b.attempts++
+	if b.timeoutsFirst > 0 {
+		b.timeoutsFirst--
+		return nil, &buildTimeoutError{hops: 2, timeout: time.Second}
+	}
 	if b.failBuild {
 		return nil, errors.New("simulated circuit build failure")
 	}
@@ -260,6 +267,41 @@ func TestDialRetryOnCircuitFailure(t *testing.T) {
 	}
 	if len(c.circuits) != 1 {
 		t.Fatalf("pool should hold 1 (healthy) circuit after retry, got %d", len(c.circuits))
+	}
+}
+
+// TestDialRetriesBuildTimeouts keeps building circuits after builds given up
+// at the learned timeout, beyond the three attempts other failures get.
+func TestDialRetriesBuildTimeouts(t *testing.T) {
+	b := &stubBuilder{timeoutsFirst: 5}
+	c := newTestClient(t, b)
+	conn, err := c.DialContext(context.Background(), "tcp", "example.com:80")
+	if err != nil {
+		t.Fatalf("dial after build timeouts: %v", err)
+	}
+	_ = conn.Close()
+	if b.attempts != 6 {
+		t.Fatalf("%d build attempts, want 6", b.attempts)
+	}
+
+	// Other failures still give up after three attempts.
+	b = &stubBuilder{failBuild: true}
+	c = newTestClient(t, b)
+	if _, err := c.DialContext(context.Background(), "tcp", "example.com:80"); err == nil {
+		t.Fatal("dial succeeded with failing builds")
+	}
+	if b.attempts != 3 {
+		t.Fatalf("%d build attempts, want 3", b.attempts)
+	}
+
+	// Timeouts are retried at most ten times (plus the three attempts).
+	b = &stubBuilder{timeoutsFirst: 100}
+	c = newTestClient(t, b)
+	if _, err := c.DialContext(context.Background(), "tcp", "example.com:80"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("got %v", err)
+	}
+	if b.attempts != 13 {
+		t.Fatalf("%d build attempts, want 13", b.attempts)
 	}
 }
 

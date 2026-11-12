@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
@@ -63,8 +64,17 @@ func (c *Client) DialContext(ctx context.Context, network, addr string) (net.Con
 	}
 	port := portOf(addr)
 	// Retry with fresh circuits on transient stream/circuit failures, reusing
-	// the pool when possible.
-	const maxAttempts = 3
+	// the pool when possible. A build given up at the learned build timeout
+	// doesn't use up an attempt: by design a fifth of builds pass it
+	// (cbtquantile), and C tor keeps trying for up to two minutes
+	// (SocksTimeout).
+	const (
+		maxAttempts      = 3
+		maxBuildTimeouts = 10
+		maxTimeoutRetry  = 2 * time.Minute
+	)
+	start := time.Now()
+	timeouts := 0
 	var lastErr error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
@@ -73,6 +83,11 @@ func (c *Client) DialContext(ctx context.Context, network, addr string) (net.Con
 		pc, err := c.allocateCircuit(ctx, port)
 		if err != nil {
 			lastErr = err
+			var timeout *buildTimeoutError
+			if errors.As(err, &timeout) && timeouts < maxBuildTimeouts && time.Since(start) < maxTimeoutRetry {
+				timeouts++
+				attempt--
+			}
 			continue
 		}
 		// Only one dial owns a circuit at a time, so cancellation cannot
@@ -234,6 +249,7 @@ func (c *Client) buildCircuit(ctx context.Context, cns *common.Consensus, port u
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	c.timer.setParams(cns)
 	circ, _, err := capi.BuildGuardedCircuit(ctx, contextBuilder{ctx: ctx, lifetime: c.lifetime, builder: c.builder}, cns, c.nextID.Add(1), 3, port, nil, c.longLived)
 	if err != nil {
 		c.obs.countBuildFailure()
@@ -299,6 +315,7 @@ type gonionBuilder struct {
 	guards   *path.GuardManager
 	obs      *observability
 	channels *guardChannels // nil: a connection per circuit
+	timer    *circuitTimer  // nil: no learned build timeout
 }
 
 func (b gonionBuilder) PublicGuardManager() *path.GuardManager { return b.guards }
@@ -337,6 +354,9 @@ func (b gonionBuilder) BuildPath(id uint32, relays []*common.RouterStatus) (capi
 		b.obs.logf("guard: rejected path not starting at the pinned bridge")
 		return nil, fmt.Errorf("embed: path does not start at configured bridge")
 	}
+	// The build time includes connecting to the guard, like C tor's
+	// (timestamp_began is set when the circuit is launched).
+	start := time.Now()
 	guard := relays[0]
 	shared, release, err := b.channels.acquire(ctx, guard.NodeID, func(ctx context.Context) (sharedConn, error) {
 		return b.connect(ctx, guard)
@@ -350,21 +370,20 @@ func (b gonionBuilder) BuildPath(id uint32, relays []*common.RouterStatus) (capi
 	conn := shared.(*gonion.Conn)
 
 	// Canceling the build tears down this circuit only; the connection
-	// stays for the other circuits.
-	circ, err := conn.BuildPathContext(ctx, relays)
+	// stays for the other circuits. A build that passes its learned timeout
+	// is given up (it keeps building for measurement, then releases the
+	// connection itself).
+	circ, err := timedBuild(b.timer, ctx, start, len(relays), func(ctx context.Context, onHop func(int)) (*gonion.Circuit, error) {
+		return conn.BuildPathObserved(ctx, relays, onHop)
+	}, release)
 	if err != nil {
-		release()
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
 		return nil, err
 	}
+	context.AfterFunc(circ.Ctx, release)
 	if ctx.Err() != nil {
 		_ = circ.Close()
-		release()
 		return nil, ctx.Err()
 	}
-	context.AfterFunc(circ.Ctx, release)
 	return &guardCirc{Circ: gonion.NewCircAdapter(circ)}, nil
 }
 

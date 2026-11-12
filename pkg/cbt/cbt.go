@@ -7,6 +7,7 @@
 package cbt
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
@@ -119,6 +120,13 @@ func New(p Params, unlearned time.Duration) *Estimator {
 	e := &Estimator{p: p, unlearned: unlearned}
 	e.recent = make([]bool, p.RecentCount)
 	return e
+}
+
+// Params returns the parameters in use.
+func (e *Estimator) Params() Params {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.p
 }
 
 // SetParams applies the parameters of a new consensus.
@@ -540,4 +548,12 @@ func (e *Estimator) sortedTimes() []int32 {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
 	return out
+}
+
+// Persistence is caller-owned storage for the build time history, like the
+// guard state. Load returning (nil, nil) means there is none yet. Unlike the
+// guard state, losing it only costs relearning: callers may ignore errors.
+type Persistence struct {
+	Load func(ctx context.Context) ([]byte, error)
+	Save func(ctx context.Context, state []byte) error
 }

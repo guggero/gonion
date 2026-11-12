@@ -19,6 +19,7 @@ import (
 	gonion "github.com/robogg133/gonion"
 	"github.com/robogg133/gonion/internal/fallback"
 	"github.com/robogg133/gonion/internal/shared"
+	"github.com/robogg133/gonion/pkg/cbt"
 	"github.com/robogg133/gonion/pkg/common"
 	"github.com/robogg133/gonion/pkg/hs"
 	"github.com/robogg133/gonion/pkg/hs/capi"
@@ -35,6 +36,10 @@ type Client struct {
 	// channels are the OR connections shared by the circuits through each
 	// guard (nil when the builder is a test double).
 	channels *guardChannels
+
+	// timer applies the learned circuit build timeout (nil when the
+	// builder is a test double).
+	timer *circuitTimer
 
 	// builder constructs circuits. Set by New/NewWithConn; overridable in
 	// tests with a stub.
@@ -126,6 +131,20 @@ type Options struct {
 	// bridge is dialed once and no other relay is ever substituted. Zero or
 	// less means a single attempt.
 	BootstrapAttempts int
+
+	// BuildTimes persists the circuit build times the client learns its
+	// circuit build timeout from (path-spec: until 100 builds are
+	// recorded, a build is given up after 30 seconds; afterwards at the
+	// 80% point of the observed build times, typically a few seconds).
+	// Nil keeps them in memory only, so every client starts learning
+	// anew. Like the guard state, the caller owns the storage.
+	BuildTimes *cbt.Persistence
+
+	// LearnBuildTimeout builds a test circuit every 10 seconds (at most
+	// 10 at once) while fewer than 100 build times are recorded, as C tor
+	// does, instead of learning from traffic only. Each test circuit costs
+	// a few KB; about 100 are needed.
+	LearnBuildTimeout bool
 }
 
 // defaultBootstrapAttempts is the number of fallbacks DefaultOptions lets New
@@ -376,7 +395,9 @@ func NewWithConn(ctx context.Context, orConn net.Conn, opts Options) (*Client, e
 		}
 	}
 	channels := newGuardChannels()
-	builder := gonionBuilder{dial: opts.GuardDialer, guards: opts.Guards, obs: obs, channels: channels}
+	timer := newCircuitTimer(cbt.DefaultParams(), opts.BuildTimes, obs)
+	timer.load(ctx)
+	builder := gonionBuilder{dial: opts.GuardDialer, guards: opts.Guards, obs: obs, channels: channels, timer: timer}
 	recoveryDial := opts.ORDialer
 	if opts.Bridge == nil && recoveryDial != nil {
 		// A built-in fallback connection carries the *selected endpoint's*
@@ -426,6 +447,7 @@ func NewWithConn(ctx context.Context, orConn net.Conn, opts Options) (*Client, e
 		longLived:      opts.LongLived,
 		builder:        builder,
 		channels:       channels,
+		timer:          timer,
 		ttl:            opts.CircuitTTL,
 		maxUses:        opts.MaxCircuitUses,
 		obs:            obs,
@@ -443,6 +465,9 @@ func NewWithConn(ctx context.Context, orConn net.Conn, opts Options) (*Client, e
 		return nil, ctx.Err()
 	}
 	c.lifetime, c.cancel = context.WithCancel(context.Background())
+	lifetime := c.lifetime
+	timer.lifetime.Store(&lifetime)
+	timer.setParams(cns)
 	var guard func(context.Context) (*common.RouterStatus, error)
 	if builder.bridge != nil {
 		guard = builder.bridge.guard
@@ -453,6 +478,9 @@ func NewWithConn(ctx context.Context, orConn net.Conn, opts Options) (*Client, e
 		return nil, err
 	}
 	go c.reapLoop(c.lifetime)
+	if opts.LearnBuildTimeout {
+		go c.learn(c.lifetime)
+	}
 	return c, nil
 }
 
@@ -494,6 +522,7 @@ func (c *Client) Close() error {
 		_ = pc.circ.Close()
 	}
 	c.channels.close()
+	c.timer.save(context.Background())
 	if c.conn != nil {
 		return c.conn.Close()
 	}
@@ -544,6 +573,13 @@ type Stats struct {
 	// (one per guard in use, kept for a few minutes after its last circuit).
 	GuardConnections int
 
+	// The circuit build timeout: whether it is learned yet, from how many
+	// recorded builds, and the soft timeout after which a build is given
+	// up (for three-hop circuits).
+	BuildTimeoutLearned bool
+	BuildTimesRecorded  int
+	BuildTimeout        time.Duration
+
 	// Guard policy state. GuardMode is "pinned-bridge" or "public-guard";
 	// Bridge fields only apply in pinned-bridge mode.
 	GuardMode             string
@@ -580,6 +616,10 @@ func (c *Client) Stats() Stats {
 		}
 	}
 	s.GuardConnections = c.channels.count()
+	if c.timer != nil {
+		bt := c.timer.stats()
+		s.BuildTimeoutLearned, s.BuildTimesRecorded, s.BuildTimeout = bt.Learned, bt.Observations, bt.SoftTimeout
+	}
 	c.mu.RLock()
 	s.ActiveCircuits = len(c.circuits)
 	s.Listeners = len(c.listeners)

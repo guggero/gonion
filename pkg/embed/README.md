@@ -138,6 +138,27 @@ mode, therefore, construction fail-closes without `Options.Guards`:
   bootstrap/directory recovery is deliberately outside this manager; non-default
   or bridge state instances remain unsupported.
 
+## Circuit build timeout
+
+A circuit build is given up after a timeout learned from the client's own
+build times (path-spec, "Learning when to give up on circuit construction"):
+the 80% point of a Pareto curve fitted to the last 1000 builds, typically a
+few seconds. `Dial` then tries another circuit, while the slow one keeps
+building as a measurement circuit until the 99% point (at least 60 seconds)
+so the tail is still recorded, and is closed afterwards. Until 100 builds are
+recorded the timeout is 30 seconds. When 18 of the last 20 builds time out
+the history is discarded and learning starts over. The `cbt*` consensus
+parameters apply, including `cbtdisabled`.
+
+- `BuildTimes` (`*cbt.Persistence{Load, Save}`) keeps the history across
+  restarts as a small JSON histogram; nil keeps it in memory. A missing or
+  broken history only means relearning.
+- `LearnBuildTimeout` builds an internal test circuit every 10 seconds (at
+  most 10 open) while fewer than 100 builds are recorded, as C tor does. Off
+  by default: each test circuit costs a few KB of traffic.
+- `Stats` reports `BuildTimeoutLearned`, `BuildTimesRecorded` and
+  `BuildTimeout`.
+
 ## Fixed bridges
 
 `DefaultBridgeOptions(BridgeOptions{Identity: rsaFingerprint, DialContext: dial})`

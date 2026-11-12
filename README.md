@@ -40,6 +40,19 @@ closed and requires separate specification review and acceptance evidence:
   connection-owned refresh recovery after channel loss, crash-consistent atomic
   cache replacement, and separate raw/hydrated cache files. The Tor cache backend
   requires an explicit caller-owned directory.
+- Bootstrap from a randomly chosen fallback (IPv4 or IPv6), retried on another
+  fallback after a failure or a stall. Microdescriptors are fetched in requests
+  of up to 500, four at a time, staying within the relays' BEGIN_DIR limits;
+  relays whose descriptor isn't served stay unused as long as the loaded ones
+  cover `min_paths_for_circs_pct` of the bandwidth-weighted paths.
+  Microdescriptors without the obsolete TAP key are accepted.
+- The consensus client protocol lists are enforced against `ClientProtocols`
+  (`Cons=1-2 Desc=1-3 DirCache=1 FlowCtrl=1 HSDir=2 HSIntro=4 HSRend=2
+  Link=4-5 Microdesc=1-3 Relay=2`): a newer consensus requiring more fails with
+  `ErrObsoleteProtocols`, missing recommended capabilities are logged.
+- Every hop needs the Fast flag; exit policies are kept as port ranges. A
+  bootstrapped client keeps one trusted consensus copy plus the connection's
+  view (65-70 MB of heap against the live network).
 - `pkg/embed`: `DefaultOptions`, caller-controlled bootstrap/guard dialers and
   storage, persistent caller-owned public guard state (`Options.Guards`, one
   guard choice shared across exit and onion circuit construction; construction

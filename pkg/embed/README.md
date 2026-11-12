@@ -256,6 +256,9 @@ context can be canceled after success without killing the listener.
 The directory request's flavor must match the returned document. Embedded
 bootstrap requests **microdesc**, verifies authority quorum, then hydrates relays
 from microdescriptor bytes whose SHA-256 digests match that signed consensus.
+Relays whose microdescriptor the cache didn't serve stay unloaded and are never
+selected; hydration fails only when the loaded ones cover less than
+`min_paths_for_circs_pct` (default 60%) of the bandwidth-weighted paths.
 The normal `ns` parser is not applied with microdesc column assumptions.
 
 The `pkg/storage/storages/tor` store keeps different formats in different files:

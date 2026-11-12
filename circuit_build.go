@@ -52,6 +52,16 @@ func (c *Conn) BuildPath(id uint32, relays []*common.RouterStatus) (*Circuit, er
 // the circuit being built, never the connection, which other circuits may
 // share. Every step is also bounded by CIRCUIT_BUILD_TIMEOUT.
 func (c *Conn) BuildPathContext(ctx context.Context, relays []*common.RouterStatus) (*Circuit, error) {
+	return c.BuildPathObserved(ctx, relays, nil)
+}
+
+// BuildPathObserved is BuildPathContext that calls onHop (if not nil) with
+// the number of open hops each time one opens, as circuit build timeout
+// learning needs (path-spec: the time until the third hop opens).
+func (c *Conn) BuildPathObserved(ctx context.Context, relays []*common.RouterStatus, onHop func(hops int)) (*Circuit, error) {
+	if onHop == nil {
+		onHop = func(int) {}
+	}
 	if len(relays) == 0 {
 		return nil, Public(ErrCircuit, "empty path")
 	}
@@ -68,6 +78,7 @@ func (c *Conn) BuildPathContext(ctx context.Context, relays []*common.RouterStat
 	if err != nil {
 		return nil, err
 	}
+	onHop(1)
 	for i, r := range relays[1:] {
 		if err := circ.extendToContext(ctx, r); err != nil {
 			// Path-bias accounting (pkg/path) must tell a guard-handshake
@@ -77,6 +88,7 @@ func (c *Conn) BuildPathContext(ctx context.Context, relays []*common.RouterStat
 			_ = circ.Close()
 			return nil, &pathBiasHopsError{err: failf(circ.Ctx, ErrExtend, err, "extend hop %d failed", i+1), hops: hops}
 		}
+		onHop(i + 2)
 	}
 	return circ, nil
 }

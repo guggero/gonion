@@ -343,9 +343,9 @@ func TestForbiddenExitValidationVectors(t *testing.T) {
 	}
 	// Selector level: a sole BadExit candidate cannot carry an exit position.
 	sl := New(cns, false)
-	allPorts := [65536 / 8]byte{}
-	for i := range allPorts {
-		allPorts[i] = 0xFF
+	allPorts, err := common.ParsePortRanges("1-65535")
+	if err != nil {
+		t.Fatal(err)
 	}
 	sl.list[0].StatusFlags = plain
 	sl.list[0].StatusFlags[common.FLAG_EXIT] = true
@@ -371,21 +371,21 @@ func TestPortPolicySelectionVectors(t *testing.T) {
 	relay.StatusFlags = [15]bool{}
 	relay.StatusFlags[common.FLAG_EXIT] = true
 	relay.StatusFlags[common.FLAG_RUNNING], relay.StatusFlags[common.FLAG_VALID] = true, true
-	relay.Ports = [65536 / 8]byte{} // reject *:*
+	relay.Ports = common.Ports{} // reject *:*
 	sl.list = []common.RouterStatus{relay}
 	if _, err := sl.SelectTail(443); err == nil {
 		t.Fatal("exit with rejecting policy selected")
 	}
-	allPorts := [65536 / 8]byte{}
-	for i := range allPorts {
-		allPorts[i] = 0xFF
+	allPorts, err := common.ParsePortRanges("1-65535")
+	if err != nil {
+		t.Fatal(err)
 	}
 	sl.list[0].Ports = allPorts
 	if r, err := sl.SelectTail(443); err != nil || r == nil {
 		t.Fatalf("policy-allowing exit rejected: %v", err)
 	}
 	// Port 0 selects a non-exit final hop without consulting policy.
-	sl.list[0].Ports = [65536 / 8]byte{}
+	sl.list[0].Ports = common.Ports{}
 	sl.list[0].StatusFlags[common.FLAG_EXIT] = false
 	if r, err := sl.SelectTail(0); err != nil || r == nil {
 		t.Fatalf("port-0 tail wrongly policy-gated: %v", err)

@@ -73,12 +73,16 @@ type dtoRouterStatus struct {
 	Ipv6Addr              string
 	ProtoVersions         common.Proto
 	StatusFlags           [common.FLAG_ARRAY_LENGTH + 1]bool
-	Ports                 string
-	OnionKey              string
-	NTorOnionKey          string
-	IdEd25519             string
-	Family                []common.Family
-	Familys               []*common.FamilyIDs
+	// PortRanges lists the accepted exit ports ("22,80-81,443").
+	PortRanges string `json:",omitempty"`
+	// Ports is the base64 bit-per-port bitmap of older caches; it is
+	// only read.
+	Ports        string `json:",omitempty"`
+	OnionKey     string
+	NTorOnionKey string
+	IdEd25519    string
+	Family       []common.Family
+	Familys      []*common.FamilyIDs
 }
 
 func dtoFromConsensus(c *common.Consensus) *dtoConsensus {
@@ -116,7 +120,7 @@ func dtoFromConsensus(c *common.Consensus) *dtoConsensus {
 			Ipv6Addr:              rs.Ipv6Addr,
 			ProtoVersions:         rs.ProtoVersions,
 			StatusFlags:           rs.StatusFlags,
-			Ports:                 base64.StdEncoding.EncodeToString(rs.Ports[:]),
+			PortRanges:            rs.Ports.String(),
 			OnionKey:              base64.StdEncoding.EncodeToString(rs.OnionKey),
 			IdEd25519:             base64.StdEncoding.EncodeToString(rs.IdEd25519),
 			Family:                rs.Family,
@@ -192,14 +196,14 @@ func (d *dtoConsensus) toConsensus() (*common.Consensus, error) {
 				rs.NodeID = [20]byte(b)
 			}
 		}
-		if err == nil && ds.Ports != "" {
+		switch {
+		case err == nil && ds.PortRanges != "":
+			rs.Ports, err = common.ParsePortRanges(ds.PortRanges)
+		case err == nil && ds.Ports != "":
 			var b []byte
 			b, err = base64.StdEncoding.Strict().DecodeString(ds.Ports)
-			if err == nil && len(b) != len(rs.Ports) {
-				err = fmt.Errorf("invalid ports bitmap length")
-			}
 			if err == nil {
-				copy(rs.Ports[:], b)
+				rs.Ports, err = common.PortsFromBitmap(b)
 			}
 		}
 		if err == nil && ds.OnionKey != "" {

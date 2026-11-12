@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ecdh"
 	"crypto/rand"
+	"encoding/base64"
 	"reflect"
 	"testing"
 	"time"
@@ -64,5 +65,62 @@ func TestRoundTrip(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, c) {
 		t.Fatalf("round-trip mismatch:\ngot  %+v\nwant %+v", got, c)
+	}
+}
+
+// TestLegacyPortsBitmap loads a cache written before exit ports were kept as
+// ranges, when they were a base64 bit-per-port bitmap.
+func TestLegacyPortsBitmap(t *testing.T) {
+	c := &common.Consensus{
+		NetowrkStatusVersion: 3,
+		Flavor:               common.ConsensusFlavorMicrodesc,
+		ValidAfter:           time.Date(2026, 1, 30, 22, 0, 0, 0, time.UTC),
+		FreshUntil:           time.Date(2026, 1, 30, 23, 0, 0, 0, time.UTC),
+		ValidUntil:           time.Date(2026, 1, 31, 1, 0, 0, 0, time.UTC),
+		RelayInformation: []common.RouterStatus{{
+			Nickname:              "old",
+			NodeID:                [20]byte{9, 9, 9},
+			Ipv4Addr:              "192.0.2.1",
+			ORPort:                9001,
+			MicrodescriptorDigest: "fXPextdkQnmBDwYmo0UHLbUhaU6C0slh/NQVtZn1VU0",
+		}},
+	}
+	c.RelayInformation[0].Ports.SetPort(1, true)
+	current, err := (Parser{}).Format(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Replace the ranges by the bitmap of an older cache.
+	bitmap := make([]byte, 65536/8)
+	for _, n := range []int{22, 443, 444} {
+		bitmap[n/8] |= 1 << (n % 8)
+	}
+	legacy := bytes.Replace(
+		current, []byte(`"PortRanges":"1"`), []byte(`"Ports":"`+
+			base64.StdEncoding.EncodeToString(bitmap)+`"`), 1,
+	)
+	if bytes.Equal(legacy, current) {
+		t.Fatalf("no port ranges in %s", current)
+	}
+
+	got, err := (Parser{}).Parse(bytes.NewReader(legacy))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ports := got.RelayInformation[0].Ports
+	if s := ports.String(); s != "22,443-444" {
+		t.Fatalf("got %q", s)
+	}
+
+	// It is written back as ranges.
+	b, err := (Parser{}).Format(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(b, []byte(`"PortRanges":"22,443-444"`)) ||
+		bytes.Contains(b, []byte(`"Ports":`)) {
+
+		t.Fatalf("unexpected cache: %s", b)
 	}
 }

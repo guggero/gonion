@@ -65,25 +65,6 @@ const (
 	FLAG_ARRAY_LENGTH
 )
 
-type Ports [65536 / 8]byte
-
-func (p *Ports) SetPort(n uint16, on bool) {
-	if on {
-		p[n/8] |= 1 << (n % 8)
-	} else {
-		p[n/8] &^= 1 << (n % 8)
-	}
-}
-func (p *Ports) IsAllowed(n uint16) bool {
-	return p[n/8]&(1<<(n%8)) != 0
-}
-
-func (p *Ports) turnOnAllPorts() {
-	for i := range p {
-		p[i] = 0xFF
-	}
-}
-
 type Consensus struct {
 	// Not serialized: persisted models must be reauthenticated from RawDocument.
 	trusted              *Consensus // Private, owned verification result; never exposes mutable fields.

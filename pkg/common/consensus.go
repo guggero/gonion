@@ -268,6 +268,10 @@ func (c *Consensus) Trusted() *Consensus {
 
 // OwnAuthenticatedHydration derives relay keys and policies from digest-bound
 // original microdescriptor bytes, never from caller-supplied model fields.
+// A relay whose descriptor is absent stays unloaded (path selection skips
+// it), as long as the loaded descriptors cover enough of the network
+// (DirInfoFraction at least MinPathsForCircuits); a descriptor that is
+// present but doesn't match its digest is an error.
 func (c *Consensus) OwnAuthenticatedHydration(descriptors map[string][]byte) (*Consensus, error) {
 	if c == nil || c.trusted == nil {
 		return nil, fmt.Errorf("consensus: authenticated source required")
@@ -280,7 +284,16 @@ func (c *Consensus) OwnAuthenticatedHydration(descriptors map[string][]byte) (*C
 	owned.trusted = nil
 	owned.Microdescriptors = make(map[string][]byte, len(descriptors))
 	for i, r := range base.RelayInformation {
-		raw := descriptors[r.MicrodescriptorDigest]
+		raw, ok := descriptors[r.MicrodescriptorDigest]
+		if !ok {
+			// The base may be an earlier hydration: never keep its
+			// keys without the descriptor they came from.
+			rs := &owned.RelayInformation[i]
+			rs.OnionKey, rs.NTorOnionKey, rs.IdEd25519 = nil, nil, nil
+			rs.Family, rs.Familys = nil, nil
+			rs.Ports, rs.MicrodescriptorLoaded = Ports{}, false
+			continue
+		}
 		md, err := ParseMicrodescriptor(raw, r.MicrodescriptorDigest)
 		if err != nil {
 			return nil, err
@@ -300,6 +313,10 @@ func (c *Consensus) OwnAuthenticatedHydration(descriptors map[string][]byte) (*C
 		owned.RelayInformation[i].Familys = md.Familys
 		owned.RelayInformation[i].Ports = *md.ExitRules
 		owned.RelayInformation[i].MicrodescriptorLoaded = true
+	}
+	if have, need := owned.DirInfoFraction(), owned.MinPathsForCircuits(); have < need {
+		return nil, fmt.Errorf("consensus: not enough directory information: "+
+			"descriptors for %.0f%% of paths, need %.0f%%", have*100, need*100)
 	}
 	owned.hydrated = true
 	view := owned.Clone()

@@ -443,8 +443,10 @@ func hydrateConsensus(ctx context.Context, candidate, previous *common.Consensus
 	}
 
 	for i, md := range descriptors {
+		// A descriptor the cache didn't send leaves its relays unloaded;
+		// OwnAuthenticatedHydration requires enough of the network.
 		if md == nil {
-			return nil, Publicf(ErrDirectory, "missing microdescriptor %s", missing[i])
+			continue
 		}
 		// A parsed cached model is not evidence: authenticate its original bytes.
 		checked, err := (microdesc.Parser{}).Parse(bytes.NewReader(md.RawDocument), []string{missing[i]})

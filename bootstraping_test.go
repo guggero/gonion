@@ -119,3 +119,42 @@ func TestBuildURLBatchLimit(t *testing.T) {
 		}
 	}
 }
+
+// TestHydrationSkipsUnservedDescriptor bootstraps when the cache doesn't send
+// one middle relay's microdescriptor; that relay stays unloaded.
+func TestHydrationSkipsUnservedDescriptor(t *testing.T) {
+	signed := testutil.Consensus(t, time.Now().UTC())
+	c := signed.Trusted()
+	var skipped string
+	for _, r := range c.RelayInformation {
+		if r.Nickname == "relay2" {
+			skipped = r.MicrodescriptorDigest
+		}
+	}
+	fetch := func(ds []string) ([]*common.Microdesc, error) {
+		out := make([]*common.Microdesc, len(ds))
+		for i, digest := range ds {
+			if digest == skipped {
+				continue
+			}
+			parsed, err := (microdesc.Parser{}).Parse(bytes.NewReader(signed.Microdescriptors[digest]), []string{digest})
+			if err != nil {
+				return nil, err
+			}
+			out[i] = parsed[0]
+		}
+		return out, nil
+	}
+	out, err := hydrateConsensus(context.Background(), c, nil, fetch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range out.RelayInformation {
+		if (r.Nickname == "relay2") == r.MicrodescriptorLoaded {
+			t.Fatalf("%s loaded=%v", r.Nickname, r.MicrodescriptorLoaded)
+		}
+	}
+	if _, ok := out.Microdescriptors[skipped]; ok {
+		t.Fatal("unserved descriptor cached")
+	}
+}

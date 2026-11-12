@@ -5,11 +5,7 @@ import (
 )
 
 func exitWeightFunc(flags [15]bool, weights common.BandWidthWeight) int64 {
-	var weightToUse int64 = int64(weights.Wee)
-	if flags[common.FLAG_GUARD] {
-		weightToUse = int64(weights.Wed)
-	}
-	return weightToUse
+	return common.ExitPositionWeight(flags, weights)
 }
 
 func exitValidateFunc(r common.RouterStatus) bool {

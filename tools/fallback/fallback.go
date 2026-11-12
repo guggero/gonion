@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand/v2"
+	"net/netip"
 	"os"
 	"strings"
 	"time"
@@ -47,9 +48,11 @@ func writeGoFormat(selected []common.RouterStatus, w io.Writer) {
 		fmt.Fprintf(w, "Fingerprint:\"%s\",\n", strings.ToUpper(hex.EncodeToString(relay.NodeID[:])))
 		fmt.Fprintf(w, "Nickname:\"%s\",\n", relay.Nickname)
 
-		if relay.Ipv6Addr != "" {
-			fmt.Fprintf(w, "IPv6:\"%s\",\n", relay.Ipv6Addr)
-			fmt.Fprintf(w, "IPv6Port:%d,\n", relay.ORPort)
+		// The consensus "a" line is "[address]:port"; its port can
+		// differ from the IPv4 ORPort.
+		if ap, err := netip.ParseAddrPort(relay.Ipv6Addr); err == nil {
+			fmt.Fprintf(w, "IPv6:\"%s\",\n", ap.Addr())
+			fmt.Fprintf(w, "IPv6Port:%d,\n", ap.Port())
 		}
 
 		fmt.Fprintln(w, "},")

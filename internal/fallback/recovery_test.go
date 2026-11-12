@@ -1,6 +1,7 @@
 package fallback
 
 import (
+	"bytes"
 	"context"
 
 	"net"
@@ -44,7 +45,13 @@ func TestSelectedFallbackRedialDoesNotSubstituteRelay(t *testing.T) {
 		t.Fatal("same relay not redialed:", err)
 	}
 	_ = retry.Close()
-	_ = first.Close()
+
+	// Take the selected fallback down; the other one stays reachable.
+	selected := first
+	if pinned.ExpectedRelayIdentity() == [20]byte(bytes.Repeat([]byte{2}, 20)) {
+		selected = second
+	}
+	_ = selected.Close()
 	if conn, err := pinned.RedialExpectedRelay(context.Background(), pinned.ExpectedRelayIdentity()); err == nil {
 		_ = conn.Close()
 		t.Fatal("unavailable selected fallback replaced with different relay")
